@@ -1,0 +1,23 @@
+{
+  "name": "hloc-dev",
+  "dockerComposeFile": ["./docker-compose.yml"],
+  "service": "hloc",
+  "workspaceFolder": "/hloc",
+  "remoteUser": "root",
+  "forwardPorts": [8888],
+  "shutdownAction": "stopCompose",
+  "runServices": ["hloc"],
+  "postCreateCommand": "python -m pip install -e .",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "containerEnv": {
+    "PYTHONUNBUFFERED": "1"
+  }
+}
