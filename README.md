@@ -1,6 +1,11 @@
 # Additions
 AWS
 - storage mount: `/dev/sdb`
+- chosen AMI needs:
+  - docker-buildx update 
+  `curl -SL https://github.com/docker/buildx/releases/download/v0.30.1/buildx-v0.30.1.linux-amd64 -o ~/.docker/cli-plugins/buildx-v0.30.1.linux-amd64`
+  - docker compose update 
+  `curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o ~/.docker/cli-plugins/docker-compose`
 
 
 
