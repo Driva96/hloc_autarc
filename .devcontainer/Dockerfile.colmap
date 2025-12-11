@@ -1,0 +1,144 @@
+ARG UBUNTU_VERSION=24.04
+ARG NVIDIA_CUDA_VERSION=12.9.1
+#
+# Docker builder stage.
+#
+FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
+
+ARG COLMAP_GIT_COMMIT=main
+ARG COLMAP_TAG=3.13.0
+ARG CUDA_ARCHITECTURES=all-major
+ARG PYTHON_VERSION=3.11
+ENV QT_XCB_GL_INTEGRATION=xcb_egl
+
+# Prevent stop building ubuntu at time zone selection.
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Prepare and empty machine for building.
+RUN apt-get update && \
+    apt-get install -y \
+        git \
+        cmake \
+        ninja-build \
+        build-essential \
+        software-properties-common \
+        libboost-program-options-dev \
+        libboost-graph-dev \
+        libboost-system-dev \
+        libeigen3-dev \
+        libfreeimage-dev \
+        libmetis-dev \
+        libgoogle-glog-dev \
+        libgtest-dev \
+        libgmock-dev \
+        libsqlite3-dev \
+        libglew-dev \
+        qt6-base-dev \
+        libqt6opengl6-dev \
+        libqt6openglwidgets6 \
+        libcgal-dev \
+        libceres-dev \
+        libcurl4-openssl-dev \
+        libssl-dev \
+        libmkl-full-dev
+
+# COLMAP atm uses CGAL 6.0.1 if want to switch to just one install of CGAL for MVS and COLMAP switch to below
+# RUN git clone https://github.com/cgal/cgal --branch=v5.6.3 && \
+#     mkdir cgal_build && \
+#     cd cgal_build &&\
+#     cmake . ../cgal &&\
+#     -DCMAKE_BUILD_TYPE=Release \
+#     -DCGAL_HEADER_ONLY=ON \
+#     -DCMAKE_INSTALL_PREFIX=/usr/local &&\
+#     make && make install &&\
+#     cd .. && rm -rf cgal_build cgal
+
+# Build and install COLMAP.
+RUN git clone https://github.com/colmap/colmap.git
+RUN cd colmap && \
+    git fetch https://github.com/colmap/colmap.git ${COLMAP_TAG} && \
+    git checkout FETCH_HEAD && \
+    mkdir build && \
+    cd build && \
+    cmake .. \
+        -GNinja \
+        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
+        -DCMAKE_INSTALL_PREFIX=/colmap-install \
+        -DBLA_VENDOR=Intel10_64lp && \
+    ninja install
+
+# Install Pycolmap and save as a wheel    
+RUN update-ca-certificates && \
+    add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get -y update && \
+    apt-get install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-dev
+
+# Move top next Build 
+RUN apt-get install -y wget unzip
+
+RUN wget https://bootstrap.pypa.io/get-pip.py && python${PYTHON_VERSION} get-pip.py
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1
+
+RUN python -m pip install --upgrade pip 
+RUN python -m pip install build setuptools wheel tomlkit
+
+RUN cd colmap && \
+    python python/ci/update_pyproject_toml.py --name "pycolmap-cuda12" --add-deps "nvidia-cuda-runtime-cu12==12.9.1" "nvidia-curand-cu12==10.3.10.19" && \
+    CMAKE_ARGS="-Dcolmap_DIR=/colmap-install/share/colmap" pip wheel . -w dist --no-deps
+#
+# Docker runtime stage.
+#
+FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS runtime
+
+# Minimal dependencies to run COLMAP binary compiled in the builder stage.
+# Note: this reduces the size of the final image considerably, since all the
+# build dependencies are not needed.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends --no-install-suggests \
+        libboost-program-options1.83.0 \
+        libc6 \
+        libomp5 \
+        libopengl0 \
+        libmetis5 \
+        libceres4t64 \
+        libfreeimage3 \
+        libgcc-s1 \
+        libgl1 \
+        libglew2.2 \
+        libgoogle-glog0v6t64 \
+        libqt6core6 \
+        libqt6gui6 \
+        libqt6widgets6 \
+        libqt6openglwidgets6 \
+        libcurl4 \
+        libcgal-dev \
+        libssl3t64 \
+        sqlite3 \
+        libmkl-locale \
+        libmkl-intel-lp64 \
+        libmkl-intel-thread \
+        libmkl-core && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# COLMAP atm uses CGAL 6.0.1 if want to switch to just one install of CGAL for MVS and COLMAP switch to below
+# RUN git clone https://github.com/cgal/cgal --branch=v5.6.3 && \
+#     mkdir cgal_build && \
+#     cd cgal_build &&\
+#     cmake . ../cgal &&\
+#     -DCMAKE_BUILD_TYPE=Release \
+#     -DCGAL_HEADER_ONLY=ON \
+#     -DCMAKE_INSTALL_PREFIX=/usr/local &&\
+#     make && make install &&\
+#     cd .. && rm -rf cgal_build cgal
+
+# Copy all files from /colmap-install/ in the builder stage to /usr/local/ in
+# the runtime stage. This simulates installing COLMAP in the default location
+# (/usr/local/), which simplifies environment variables. It also allows the user
+# of this Docker image to use it as a base image for compiling against COLMAP as
+# a library. For instance, CMake will be able to find COLMAP easily with the
+# command: find_package(COLMAP REQUIRED).
+COPY --from=builder /colmap-install/ /usr/local/
+COPY --from=builder /colmap/dist/ /pycolmap/

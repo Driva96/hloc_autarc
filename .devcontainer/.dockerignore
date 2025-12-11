@@ -1,0 +1,17 @@
+# Ignore git history (massive speedup)
+.git
+.gitignore
+
+# Ignore Docker configuration files so changing them doesn't trigger rebuilds
+docker-compose.yml
+docker-compose.yaml
+.devcontainer
+Dockerfile
+
+# Ignore build artifacts/env settings
+.env
+__pycache__
+*.pyc
+
+*.ipynb
+.ipynb_checkpoints

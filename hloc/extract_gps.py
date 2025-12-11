@@ -1,0 +1,121 @@
+import os
+import numpy as np
+from PIL import Image, ExifTags
+import pycolmap
+
+# --- 1. GPS Extraction Helper (Same as before) ---
+def get_gps_from_image(image_path):
+    """
+    Extracts Lat, Lon, Alt from EXIF. 
+    Returns: (lat, lon, alt) as floats or None.
+    """
+    def _convert_to_degrees(value):
+        d = float(value[0])
+        m = float(value[1])
+        s = float(value[2])
+        return d + (m / 60.0) + (s / 3600.0)
+
+    try:
+        img = Image.open(image_path)
+        exif = img._getexif()
+        if not exif: return None
+
+        exif_data = {ExifTags.TAGS[k]: v for k, v in exif.items() if k in ExifTags.TAGS}
+        
+        if 'GPSInfo' not in exif_data: return None
+
+        gps_data = {}
+        for k, v in exif_data['GPSInfo'].items():
+            name = ExifTags.GPSTAGS.get(k, k)
+            gps_data[name] = v
+
+        if 'GPSLatitude' in gps_data and 'GPSLongitude' in gps_data:
+            lat = _convert_to_degrees(gps_data['GPSLatitude'])
+            if gps_data.get('GPSLatitudeRef') == 'S': lat = -lat
+
+            lon = _convert_to_degrees(gps_data['GPSLongitude'])
+            if gps_data.get('GPSLongitudeRef') == 'W': lon = -lon
+
+            alt = 0.0
+            if 'GPSAltitude' in gps_data:
+                alt = float(gps_data['GPSAltitude'])
+                if gps_data.get('GPSAltitudeRef') == b'\x01': alt = -alt
+
+            return lat, lon, alt
+    except Exception as e:
+        print(f"Warning extracting GPS for {image_path}: {e}")
+    return None
+
+# --- 2. Database Injection using PyCOLMAP API ---
+def populate_priors(database_path, image_dir):
+    if not os.path.exists(database_path):
+        raise FileNotFoundError(f"Database file not found: {database_path}")
+
+    # Initialize GPS transform (WGS84 -> ECEF)
+    gps_transform = pycolmap.GPSTransform(pycolmap.GPSTransfromEllipsoid.WGS84)         
+
+    # Open the database using the PyCOLMAP binding
+    # The binding you provided supports context managers (__enter__/__exit__)
+    with pycolmap.Database.open(database_path) as db:
+        
+        print("Reading images from database...")
+        # Get all images currently in the DB
+        # returns a list of Image objects (which contain .image_id and .name)
+        db_images = db.read_all_images()
+        
+        print(f"Found {len(db_images)} images. Starting GPS extraction...")
+
+        # Use the exposed Transaction wrapper for speed
+        sys = pycolmap.PosePriorCoordinateSystem.WGS84
+        with pycolmap.DatabaseTransaction(db):
+            
+            count = 0
+            for img in db_images:
+                image_path = os.path.join(image_dir, img.name)
+                
+                if not os.path.exists(image_path):
+                    continue
+
+                gps = get_gps_from_image(image_path)
+                
+                if gps:
+                    lat, lon, alt = gps
+                    
+                    # Convert to ECEF (x, y, z)
+                    xyz_ecef = gps_transform.ellipsoid_to_ecef(np.array([[lat, lon, alt]], dtype=np.float64))
+                    
+                    # --- Create the PosePrior Object ---
+                    # Note: We rely on the PosePrior class being exposed in your bindings.
+                    # Typically, standard COLMAP PosePrior has: position, coordinate_system, (optional) confidence
+                    prior = pycolmap.PosePrior(position = xyz_ecef[0][:, None], coordinate_system = sys)
+                    
+                    # 0 = WGS84 (ECEF), 1 = Cartesian. 
+                    # Since we used ellipsoid_to_ecef, this is technically WGS84 ECEF.
+                    
+                    # CRITICAL: We must link this prior to the specific image ID.
+                    # The WritePosePrior function with `use_pose_prior_id=True` expects
+                    # the ID to be present in the prior object.
+                    
+                    # Depending on your specific binding version for PosePrior, 
+                    # you might also need to set confidence.
+                    # prior.confidence = np.identity(3) * ...
+
+                    # Write to database
+                    # use_pose_prior_id=True forces the DB to use prior.image_id 
+                    # instead of auto-incrementing.
+                    if db.exists_pose_prior(img.image_id):
+                        db.update_pose_prior(img.image_id, prior)
+                    else:
+                        db.write_pose_prior(img.image_id, prior)
+                    
+                    count += 1
+
+        print(f"Successfully wrote {count} pose priors to database.")
+
+# --- Usage ---
+if __name__ == "__main__":
+    DB_PATH = "database.db"
+    IMAGES_PATH = "path/to/images" 
+    
+    # Ensure 'images' table is populated (e.g. by feature extraction) before running this
+    populate_priors(DB_PATH, IMAGES_PATH)

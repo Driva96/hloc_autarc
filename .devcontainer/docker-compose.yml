@@ -4,10 +4,11 @@ services:
       context: ..
       dockerfile: .devcontainer/Dockerfile
     image: hloc:dev
+    shm_size: '24gb'  # Increase this value as needed
     container_name: hloc-dev
     volumes:
       - ..:/hloc
-      - ~/data/autarc:/data:cached
+      - /data/autarc:/data:cached
     working_dir: /hloc
     tty: true
     stdin_open: true
@@ -23,5 +24,9 @@ services:
             - capabilities: [gpu]
               count: all
               driver: nvidia
+    ulimits:
+      stack:
+        soft: -1
+        hard: -1
     # Or (older syntax):
     # runtime: nvidia

@@ -78,6 +78,8 @@ def incremental_mapping(
         )
         pbars[-1].update(2)
 
+    reconstructions = {}
+    
     reconstructions = pycolmap.incremental_mapping(
         database_path,
         image_dir,
@@ -95,6 +97,7 @@ def run_reconstruction(
     database_path: Path,
     image_dir: Path,
     verbose: bool = False,
+    pose_prior: bool = False, 
     options: Optional[Dict[str, Any]] = None,
 ) -> pycolmap.Reconstruction:
     models_path = sfm_dir / "models"
@@ -103,6 +106,8 @@ def run_reconstruction(
     if options is None:
         options = {}
     options = {"num_threads": min(multiprocessing.cpu_count(), 16), **options}
+    if pose_prior:
+        options = {"use_prior_position": True, "prior_position_std": 2.0, "prior_position_z_std": 3.0, **options}
 
     with OutputCapture(verbose):
         reconstructions = incremental_mapping(

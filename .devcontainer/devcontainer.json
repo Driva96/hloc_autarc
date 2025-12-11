@@ -7,7 +7,10 @@
   "forwardPorts": [8888],
   "shutdownAction": "stopCompose",
   "runServices": ["hloc"],
-  "postCreateCommand": "python -m pip install -e .",
+  "hostRequirements": {
+    "gpu": "optional" 
+  },
+  "postCreateCommand": "python -m pip install --no-deps -e . --no-build-isolation && nbstripout --install",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -18,6 +21,7 @@
     }
   },
   "containerEnv": {
-    "PYTHONUNBUFFERED": "1"
+    "PYTHONUNBUFFERED": "1",
+    "BUILDKIT_PROGRESS": "plain"
   }
 }

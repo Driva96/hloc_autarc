@@ -175,9 +175,10 @@ class ImageDataset(torch.utils.data.Dataset):
         "interpolation": "cv2_area",  # pil_linear is more accurate but slower
     }
 
-    def __init__(self, root, conf, paths=None):
+    def __init__(self, root, conf, paths=None, mask_dir: Optional[Path]=None):
         self.conf = conf = SimpleNamespace(**{**self.default_conf, **conf})
         self.root = root
+        self.mask_dir = mask_dir
 
         if paths is None:
             paths = []
@@ -223,6 +224,40 @@ class ImageDataset(torch.utils.data.Dataset):
             "image": image,
             "original_size": np.array(size),
         }
+        if self.mask_dir:
+            mask_path = self.mask_dir / f'{Path(name).stem}.png'
+            if mask_path.exists():
+                # Read mask (Gray: HxW)
+                mask = read_image(mask_path, grayscale=True)
+                
+                # CRITICAL: Resize mask to match the current image size
+                # image is (C, H, W), so we need H and W
+                current_h, current_w = image.shape[1], image.shape[2]
+                
+                if mask.shape[:2] != (current_h, current_w):
+                    # Use INTER_NEAREST to keep mask binary (0 or 255), avoid blurry edges
+                    mask = cv2.resize(mask, (current_w, current_h), interpolation=cv2.INTER_NEAREST)
+
+                # Convert mask to float 0.0 or 1.0 and add channel dim: (H, W) -> (1, H, W)
+                # Assuming mask is white (255) where valid and black (0) where masked
+                mask_tensor = (mask > 0).astype(np.float32)[None]
+
+                # Apply mask using simple NumPy multiplication (broadcasting handles the channels)
+                # image is 0..1, mask is 0..1. Result is 0..1
+                masked_image = image * mask_tensor
+
+                # --- DEBUGGING / SAVING (Optional) ---
+                # To save, we must convert back to HWC and 0-255 uint8
+                debug_img = (masked_image.transpose(1, 2, 0) * 255.0).astype(np.uint8)
+                if debug_img.shape[2] == 1:
+                    debug_img = debug_img[:, :, 0] # Remove channel dim for grayscale save
+                (self.root / 'masked').mkdir(exist_ok=True, parents=True)
+                # PIL.Image.fromarray(debug_img).save(self.root /'masked' /f'{Path(name).stem}.png', quality=95)
+                # -------------------------------------
+
+                # Update data dict
+                data['mask'] = mask_tensor # Optional: store mask if needed by model
+                # data['image'] = masked_image # Update image with masked version
         return data
 
     def __len__(self):
@@ -238,12 +273,12 @@ def main(
     image_list: Optional[Union[Path, List[str]]] = None,
     feature_path: Optional[Path] = None,
     overwrite: bool = False,
-) -> Path:
+    mask_dir: Optional[Path] = None) -> Path:
     logger.info(
         "Extracting local features with configuration:" f"\n{pprint.pformat(conf)}"
     )
 
-    dataset = ImageDataset(image_dir, conf["preprocessing"], image_list)
+    dataset = ImageDataset(image_dir, conf["preprocessing"], image_list, mask_dir)
     if feature_path is None:
         feature_path = Path(export_dir, conf["output"] + ".h5")
     feature_path.parent.mkdir(exist_ok=True, parents=True)
@@ -266,12 +301,59 @@ def main(
         name = dataset.names[idx]
         pred = model({"image": data["image"].to(device, non_blocking=True)})
         pred = {k: v[0].cpu().numpy() for k, v in pred.items()}
+        
+        # #### ADAPTED START ####
+        if "keypoints" in pred and "mask" in data:
+        # 1. Extract Mask (Handle Tensor/Numpy and Dimensions)
+        # Assuming data['mask'] is (Batch, 1, H, W). With Batch=1 -> we want (H, W)
+            mask = data['mask']
+            if hasattr(mask, "cpu"): 
+                mask = mask.cpu().numpy()
+            mask = mask[0, 0]  # Shape: (H, W)
+
+            kps = pred['keypoints']
+            h, w = mask.shape
+            
+            # 2. Safe Indexing (Prevent crashes for out-of-bound predictions)
+            x = kps[:, 0].astype(int)
+            y = kps[:, 1].astype(int)
+
+            # Check A: Is point strictly within image bounds?
+            inside_x = (x >= 0) & (x < w)
+            inside_y = (y >= 0) & (y < h)
+            inside_image = inside_x & inside_y
+
+            # Check B: Is point on valid mask region?
+            # We clip coordinates to avoid IndexError during lookup. 
+            # Points actually outside will be caught by 'inside_image' anyway.
+            x_safe = np.clip(x, 0, w - 1)
+            y_safe = np.clip(y, 0, h - 1)
+            on_mask = mask[y_safe, x_safe] > 0
+
+            # Combine checks
+            valid_keypoint = inside_image & on_mask
+
+            # 3. Apply Filter
+            print(f"[{name}] KPs total: {len(kps)} | In bounds: {np.sum(inside_image)} | Valid mask: {np.sum(valid_keypoint)}")
+            
+            pred['keypoints'] = pred['keypoints'][valid_keypoint]
+            if 'keypoint_scores' in pred:
+                pred['keypoint_scores'] = pred['keypoint_scores'][valid_keypoint]
+            if 'scales' in pred:
+                pred['scales'] = pred['scales'][valid_keypoint]
+            if 'descriptors' in pred:
+                # Descriptors usually (Dim, N)
+                pred['descriptors'] = pred['descriptors'][:, valid_keypoint]
+        # #### ADAPTED END ####
 
         pred["image_size"] = original_size = data["original_size"][0].numpy()
         if "keypoints" in pred:
             size = np.array(data["image"].shape[-2:][::-1])
             scales = (original_size / size).astype(np.float32)
+            
+            # Scaling is now applied only to the VALID keypoints
             pred["keypoints"] = (pred["keypoints"] + 0.5) * scales[None] - 0.5
+            
             if "scales" in pred:
                 pred["scales"] *= scales.mean()
             # add keypoint uncertainties scaled to the original resolution
@@ -317,6 +399,7 @@ if __name__ == "__main__":
     parser.add_argument("--as_half", action="store_true")
     parser.add_argument("--image_list", type=Path)
     parser.add_argument("--feature_path", type=Path)
+    parser.add_argument('--mask_dir', type=Path)
     args = parser.parse_args()
     main(
         confs[args.conf],
@@ -325,4 +408,5 @@ if __name__ == "__main__":
         args.as_half,
         args.image_list,
         args.feature_path,
+        args.mask_dir,
     )
