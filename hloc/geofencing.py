@@ -156,6 +156,8 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
     recon.write(output_model_path)
     print(f"Saved to {output_model_path}")
 
+    return {"center": world_geom_center, "normal": normal_axis, "radius": simple_cylinder_radius}
+
 # --- USAGE ---
 # buffer_dist depends on your scale. If GPS/metric, 20.0 = 20 meters buffer.
 # cylinder_geofence("outputs/sfm", "outputs/sfm_geofenced", buffer_dist=20.0)
