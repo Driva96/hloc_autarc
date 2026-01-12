@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Mapping, Tuple
+import subprocess
 
 import cv2
 import h5py
@@ -7,6 +8,22 @@ import numpy as np
 import pycolmap
 
 from .parsers import names_to_pair, names_to_pair_old
+
+def run_command(command: list, cwd: str = None, env: dict = None, verbose: bool = True):
+    if verbose:
+        print(" ".join(command))
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, cwd=cwd, env=env
+    )
+    while True:
+        output = process.stdout.readline()
+        if output == b"" and process.poll() is not None:
+            break
+        if output:
+            if verbose:
+                print(output.decode().strip())
+    rc = process.poll()
+    return rc
 
 
 def read_image(path, grayscale=False):
