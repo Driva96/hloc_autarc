@@ -183,7 +183,7 @@ class ImageDataset(torch.utils.data.Dataset):
         if paths is None:
             paths = []
             for g in conf.globs:
-                paths += glob.glob((Path(root) / "**" / g).as_posix(), recursive=True)
+                paths += glob.glob((Path(root) / g).as_posix(), recursive=False)
             if len(paths) == 0:
                 raise ValueError(f"Could not find any image in root: {root}.")
             paths = sorted(set(paths))
@@ -334,7 +334,7 @@ def main(
             valid_keypoint = inside_image & on_mask
 
             # 3. Apply Filter
-            print(f"[{name}] KPs total: {len(kps)} | In bounds: {np.sum(inside_image)} | Valid mask: {np.sum(valid_keypoint)}")
+            print(f"[{name}] KPs total: {len(kps)} | In mask: {np.sum(valid_keypoint)} | % of on mask {np.sum(on_mask)/on_mask.size} | image size {np.min(kps), np.max(kps)} | Valid mask: {np.sum(valid_keypoint)}")
             
             pred['keypoints'] = pred['keypoints'][valid_keypoint]
             if 'keypoint_scores' in pred:
