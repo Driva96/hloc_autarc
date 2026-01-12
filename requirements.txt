@@ -11,6 +11,7 @@ plotly
 scipy
 scikit-image
 shapely
+pymeshlab
 h5py
 pycolmap-cuda12 #>=3.13.0
 kornia>=0.6.11

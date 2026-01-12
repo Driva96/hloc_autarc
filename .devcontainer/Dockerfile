@@ -26,8 +26,8 @@ RUN apt-get update -y && \
         libglu1-mesa-dev \
         libglew-dev \
         libglfw3-dev 
-# Eigen
-RUN git clone https://gitlab.com/libeigen/eigen --branch 3.4
+# Eigen 3.4 is standard in many distros now, but we want 3.2 for compatibility with other libs
+RUN git clone https://gitlab.com/libeigen/eigen --branch 3.4 
 RUN mkdir eigen_build
 RUN cd eigen_build &&\
     cmake . ../eigen $EIGEN_BUILD_ARG &&\
@@ -145,8 +145,10 @@ RUN apt-get update && apt-get install -y \
     qt6-base-dev qt6-tools-dev libqt6opengl6-dev
 
 # === OpenMVS === #
-RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch develop && \
+RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develop && \
     cd /openMVS && \
+    # git fetch https://github.com/cdcseacave/openMVS.git 973a37b2e9f417a80696a1d93994e636078587aa &&\
+    # git checkout FETCH_HEAD &&\
     git submodule update --init --recursive && \
     # ENABLED: Compatibility fixes
     sed -i 's/IMWRITE_JPEGXL_QUALITY/IMWRITE_JPEG_QUALITY/g' /openMVS/libs/Common/Types.inl && \
@@ -159,6 +161,20 @@ RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch develo
     cmake --build . -j4 --config Release && \
     cmake --install . && \
     cd .. && rm -rf openMVS_build /vcglib
+
+# === MVS-Texturing ===
+# Deps 
+RUN apt-get update && apt-get install -y \
+    libtbb-dev 
+
+RUN git clone https://github.com/nmoehrle/mvs-texturing.git /mvs-texturing && \
+    cd /mvs-texturing && \
+    mkdir build && cd build && \
+    cmake -S .. -B . -DCMAKE_BUILD_TYPE=Release && \
+    make -j4 && \
+    make install && \
+    cd .. && rm -rf build
+
 
 # git fetch https://github.com/cdcseacave/openMVS.git "v2.3.0" && \
 # git checkout FETCH_HEAD && \
