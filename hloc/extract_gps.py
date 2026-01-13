@@ -65,24 +65,34 @@ def populate_priors(database_path, image_dir):
         
         print(f"Found {len(db_images)} images. Starting GPS extraction...")
 
+        gps = {}
+        for img in db_images:
+            image_path = os.path.join(image_dir, img.name)
+            
+            if not os.path.exists(image_path):
+                continue
+
+            gps[img.image_id] = get_gps_from_image(image_path)
+        
+        # Pick the Reference Datum (The Local Origin)
+        # We use the first image found as (0, 0, 0)
+        ref_id = next(iter(gps))
+        ref_lat, ref_lon, ref_alt = gps[ref_id]
+        print(f"Ref Point set to Image #{ref_id}: Lat={ref_lat:.6f}, Lon={ref_lon:.6f}, Alt={ref_alt:.2f}")
+
         # Use the exposed Transaction wrapper for speed
-        sys = pycolmap.PosePriorCoordinateSystem.WGS84
+        sys = pycolmap.PosePriorCoordinateSystem.CARTESIAN 
         with pycolmap.DatabaseTransaction(db):
             
             count = 0
-            for img in db_images:
-                image_path = os.path.join(image_dir, img.name)
-                
-                if not os.path.exists(image_path):
-                    continue
 
-                gps = get_gps_from_image(image_path)
+            for img in db_images:
                 
-                if gps:
-                    lat, lon, alt = gps
+                if gps[img.image_id] is not None:
+                    lat, lon, alt = gps[img.image_id]
                     
                     # Convert to ECEF (x, y, z)
-                    xyz_ecef = gps_transform.ellipsoid_to_ecef(np.array([[lat, lon, alt]], dtype=np.float64))
+                    xyz_ecef = gps_transform.ellipsoid_to_enu(np.array([[lat, lon, alt]], dtype=np.float64), ref_lat, ref_lon)
                     
                     # --- Create the PosePrior Object ---
                     # Note: We rely on the PosePrior class being exposed in your bindings.

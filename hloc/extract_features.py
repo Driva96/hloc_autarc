@@ -226,6 +226,8 @@ class ImageDataset(torch.utils.data.Dataset):
         }
         if self.mask_dir:
             mask_path = self.mask_dir / f'{Path(name).stem}.png'
+            if not mask_path.exists():
+                mask_path = self.mask_dir / f'{Path(name).stem}.mask.png'
             if mask_path.exists():
                 # Read mask (Gray: HxW)
                 mask = read_image(mask_path, grayscale=True)
