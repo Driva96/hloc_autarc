@@ -47,7 +47,7 @@ def get_gps_from_image(image_path):
     return None
 
 # --- 2. Database Injection using PyCOLMAP API ---
-def populate_priors(database_path, image_dir):
+def populate_priors(database_path, image_dir, sys=pycolmap.PosePriorCoordinateSystem.WGS84):
     if not os.path.exists(database_path):
         raise FileNotFoundError(f"Database file not found: {database_path}")
 
@@ -81,44 +81,53 @@ def populate_priors(database_path, image_dir):
         print(f"Ref Point set to Image #{ref_id}: Lat={ref_lat:.6f}, Lon={ref_lon:.6f}, Alt={ref_alt:.2f}")
 
         # Use the exposed Transaction wrapper for speed
-        sys = pycolmap.PosePriorCoordinateSystem.CARTESIAN 
         with pycolmap.DatabaseTransaction(db):
             
             count = 0
 
             for img in db_images:
                 
-                if gps[img.image_id] is not None:
-                    lat, lon, alt = gps[img.image_id]
-                    
-                    # Convert to ECEF (x, y, z)
-                    xyz_ecef = gps_transform.ellipsoid_to_enu(np.array([[lat, lon, alt]], dtype=np.float64), ref_lat, ref_lon)
-                    
-                    # --- Create the PosePrior Object ---
-                    # Note: We rely on the PosePrior class being exposed in your bindings.
-                    # Typically, standard COLMAP PosePrior has: position, coordinate_system, (optional) confidence
-                    prior = pycolmap.PosePrior(position = xyz_ecef[0][:, None], coordinate_system = sys)
-                    
-                    # 0 = WGS84 (ECEF), 1 = Cartesian. 
-                    # Since we used ellipsoid_to_ecef, this is technically WGS84 ECEF.
-                    
-                    # CRITICAL: We must link this prior to the specific image ID.
-                    # The WritePosePrior function with `use_pose_prior_id=True` expects
-                    # the ID to be present in the prior object.
-                    
-                    # Depending on your specific binding version for PosePrior, 
-                    # you might also need to set confidence.
-                    # prior.confidence = np.identity(3) * ...
+                if gps[img.image_id] is None:
+                    continue
 
-                    # Write to database
-                    # use_pose_prior_id=True forces the DB to use prior.image_id 
-                    # instead of auto-incrementing.
-                    if db.exists_pose_prior(img.image_id):
-                        db.update_pose_prior(img.image_id, prior)
-                    else:
-                        db.write_pose_prior(img.image_id, prior)
+                lat, lon, alt = gps[img.image_id]
+                position = None # Placeholder for position vector
+                if sys == pycolmap.PosePriorCoordinateSystem.WGS84:
+                    # Pass raw Lat, Lon, Alt.
+                    # COLMAP C++ will detect the WGS84 flag and run ConvertPosePriorsToENU internaly
+                    position = np.array([lat, lon, alt])
+
+                elif sys == pycolmap.PosePriorCoordinateSystem.CARTESIAN:
+                    # Convert to ECEF (x, y, z)
+                    xyz_enu = gps_transform.ellipsoid_to_enu(np.array([[lat, lon, alt]], dtype=np.float64), ref_lat, ref_lon)
                     
-                    count += 1
+                    position = xyz_enu[0][:, None]  # Column vector
+
+                # --- Create the PosePrior Object ---
+                # Note: We rely on the PosePrior class being exposed in your bindings.
+                # Typically, standard COLMAP PosePrior has: position, coordinate_system, (optional) confidence
+                prior = pycolmap.PosePrior(position = position, coordinate_system = sys)
+                
+                # 0 = WGS84 (ECEF), 1 = Cartesian. 
+                # Since we used ellipsoid_to_ecef, this is technically WGS84 ECEF.
+                
+                # CRITICAL: We must link this prior to the specific image ID.
+                # The WritePosePrior function with `use_pose_prior_id=True` expects
+                # the ID to be present in the prior object.
+                
+                # Depending on your specific binding version for PosePrior, 
+                # you might also need to set confidence.
+                # prior.confidence = np.identity(3) * ...
+
+                # Write to database
+                # use_pose_prior_id=True forces the DB to use prior.image_id 
+                # instead of auto-incrementing.
+                if db.exists_pose_prior(img.image_id):
+                    db.update_pose_prior(img.image_id, prior)
+                else:
+                    db.write_pose_prior(img.image_id, prior)
+                
+                count += 1
 
         print(f"Successfully wrote {count} pose priors to database.")
 
