@@ -16,10 +16,36 @@ import os
 from typing import Union, Literal
 from pathlib import Path
 
+def is_camera_inside_box(cam_center, corners, method, rotation_matrix=None, mean=None):
+    """
+    Simple check if camera is inside the 3D bounding box.
+    """
+    if method == "world" or method == "spatial":
+        # Axis Aligned check
+        min_xyz = np.min(corners, axis=0)
+        max_xyz = np.max(corners, axis=0)
+        return np.all(cam_center >= min_xyz) and np.all(cam_center <= max_xyz)
+    
+    elif method == "pca":
+        # Transform camera to local PCA space
+        if rotation_matrix is None or mean is None:
+            return False # Fallback
+        
+        cam_local = (cam_center - mean) @ rotation_matrix
+        
+        # Transform corners to local to find bounds
+        corners_local = (corners - mean) @ rotation_matrix
+        min_uvw = np.min(corners_local, axis=0)
+        max_uvw = np.max(corners_local, axis=0)
+        
+        return np.all(cam_local >= min_uvw) and np.all(cam_local <= max_uvw)
+    
+    return False
+
 def get_safe_2d_projection(img, camera, corners_world):
     """
-    Projects 3D box corners to 2D, handling points behind the camera 
-    by clipping edges against the near plane.
+    Projects 3D box corners to 2D by clipping edges against the camera's near plane.
+    Returns a list of 2D points (N, 2) to be wrapped in a Convex Hull.
     """
     
     # 1. Transform World Points to Camera Space
@@ -30,10 +56,9 @@ def get_safe_2d_projection(img, camera, corners_world):
     # P_cam = R * P_world + t
     pts_cam = (R @ corners_world.T).T + tvec
 
-    # 2. Define the 12 edges of a box (indices of the 8 corners)
-    # This assumes corners are defined in the standard order:
-    # 0-3: Bottom ring, 4-7: Top ring. Vertical connections between 0-4, etc.
-    # Adjust indices if your corners_world order is different.
+    # 2. Define Box Topology
+    # Assumes corners are defined as:
+    # 0-3: Bottom Ring (CCW or CW), 4-7: Top Ring (CCW or CW)
     edges_indices = [
         (0,1), (1,2), (2,3), (3,0), # Bottom face
         (4,5), (5,6), (6,7), (7,4), # Top face
@@ -41,7 +66,7 @@ def get_safe_2d_projection(img, camera, corners_world):
     ]
 
     valid_cam_points = []
-    near_z = 0.1  # The "Near Plane" distance (meters)
+    near_z = 0.01  # Meters. Keep this small but positive.
 
     for (i1, i2) in edges_indices:
         p1 = pts_cam[i1]
@@ -52,25 +77,26 @@ def get_safe_2d_projection(img, camera, corners_world):
         p2_front = p2[2] > near_z
 
         if p1_front and p2_front:
-            # Both visible: keep the second point (first will be kept by previous edge usually, 
-            # but for hull it doesn't matter if we have duplicates)
+            # Both visible
             valid_cam_points.append(p1)
             valid_cam_points.append(p2)
         
         elif not p1_front and not p2_front:
-            # Both behind: entire edge is invisible
+            # Both behind: entire edge invisible
             continue
             
         else:
-            # ONE is behind, ONE is in front. We need to find the intersection.
-            # We want point P_int where Z = near_z
+            # Intersection required
             # Parametric line: P(t) = P1 + t * (P2 - P1)
-            # Solve for Z: P1_z + t * (P2_z - P1_z) = near_z
+            # Solve Pz(t) = near_z
             
-            t = (near_z - p1[2]) / (p2[2] - p1[2] + 1e-9)
+            # Avoid division by zero (though one is front and one back, so they can't be equal)
+            denom = (p2[2] - p1[2])
+            if abs(denom) < 1e-9: continue
+
+            t = (near_z - p1[2]) / denom
             p_int = p1 + t * (p2 - p1)
 
-            # Add the visible point and the intersection point
             if p1_front:
                 valid_cam_points.append(p1)
                 valid_cam_points.append(p_int)
@@ -79,19 +105,18 @@ def get_safe_2d_projection(img, camera, corners_world):
                 valid_cam_points.append(p2)
 
     if len(valid_cam_points) == 0:
-        return np.array([])
+        return np.empty((0, 2))
 
     valid_cam_points = np.array(valid_cam_points)
 
     # 3. Project from Camera Space to Image Space
-    # pycolmap cameras usually project from normalized coordinates (x/z, y/z)
     points_2d = []
     
     for pc in valid_cam_points:
-        # Normalize: divide by Z
+        # Normalize: (x/z, y/z)
         norm_xy = pc[:2] / pc[2]
         
-        # Apply intrinsics
+        # Apply intrinsics (Pycolmap handles distortion models here)
         uv = camera.img_from_cam(norm_xy)
         points_2d.append(uv)
         
@@ -126,6 +151,10 @@ def create_mvs_masks(
     for p3d_id, p3d in recon.points3D.items():
         sparse_points.append(p3d.xyz)
     sparse_points = np.asarray(sparse_points, dtype=np.float64) if len(sparse_points) > 0 else None
+
+    # Variables for PCA inside-check
+    pca_R = None
+    pca_mu = None
 
     if cam_centers.size == 0:
         raise ValueError("Reconstruction has no images/camera centers.")
@@ -225,13 +254,31 @@ def create_mvs_masks(
     elif method.lower() == "spatial":
         if bbox_min is None or bbox_max is None:
             raise ValueError("For 'spatial' method, bbox_min and bbox_max must be provided.")
-        corners_world = np.array(np.meshgrid(
+        # itterates y and then x, but we will do x and then y to be consistent with world method
+        """ corners_world = np.array(np.meshgrid(
             [bbox_min[0], bbox_max[0]],
             [bbox_min[1], bbox_max[1]],
             [bbox_min[2], bbox_max[2]],
-        )).T.reshape(-1, 3)
+        )).T.reshape(-1, 3) """
+        # Unpack bounds
+        min_x, min_y, min_z = bbox_min
+        max_x, max_y, max_z = bbox_max
+
+        # Manual definition ensures topology matches edges_indices
+        # Order: Bottom Ring (0-3), then Top Ring (4-7)
+        corners_world = np.array([
+            [min_x, min_y, min_z], # 0: Bottom-Left-Front
+            [max_x, min_y, min_z], # 1: Bottom-Right-Front
+            [max_x, max_y, min_z], # 2: Bottom-Right-Back
+            [min_x, max_y, min_z], # 3: Bottom-Left-Back
+            
+            [min_x, min_y, max_z], # 4: Top-Left-Front
+            [max_x, min_y, max_z], # 5: Top-Right-Front
+            [max_x, max_y, max_z], # 6: Top-Right-Back
+            [min_x, max_y, max_z], # 7: Top-Left-Back
+        ])
         # print(f"BBox(spatial): Min {bbox_min}, Max {bbox_max}")
-        print(f"Corners: {corners_world}")
+        # print(f"Corners: {corners_world}")
 
     else:
         raise ValueError("Unknown method. Use 'world' or 'pca'.")
@@ -239,51 +286,64 @@ def create_mvs_masks(
     # 4. Generate Masks by projecting the box corners
     for img_id, img in recon.images.items():
         camera = recon.cameras[img.camera_id]
+        cam_center = img.projection_center()
 
         # World-to-Camera Transform (R, t)
         world_t_camera = img.cam_from_world()
         tvec = world_t_camera.translation
         R = world_t_camera.rotation.matrix()
 
-        # Transform corners to Camera Coordinate System
-        corners_cam = (R @ corners_world.T).T + tvec  # (8,3)
-
-        # Project to 2D using camera model (pycolmap)
-        #corners_cam_2d = get_safe_2d_projection(img, camera, corners_world)   
-        corners_cam_2d = []
-        for corner_world in corners_world:
-            corner_cam = img.project_point(corner_world)  # Single point projection
-            if corner_cam is not None:
-                corners_cam_2d.append(corner_cam)
-
-        for i, c in enumerate(corners_cam_2d):
-            print(c, np.array(c).shape, type(c))
-
-        corners_cam_2d = np.array(corners_cam_2d)
-
-        # Keep points in front of camera,
-        """ valid = corners_cam_2d[:, 2] > 1e-6
-        valid_corners = corners_cam_2d[valid] """
-
-        # check not needed for pycolmap projection, returns None for invalid
-        valid_corners = corners_cam_2d
-
+        # Initialize blank mask
         mask = np.zeros((camera.height, camera.width), dtype=np.uint8)
 
-        if len(valid_corners) > 0:
-            # 1. Cast directly to int32 (points are already in pixel coordinates)
-            points_2d = valid_corners.astype(np.int32)
+        if is_camera_inside_box(cam_center, corners_world, method, pca_R, pca_mu):
+            # If camera is inside the box, we can simply fill the entire image (or skip masking)
+            mask[:] = 255
+        else:
+            # Transform corners to Camera Coordinate System
+            corners_cam = (R @ corners_world.T).T + tvec  # (8,3)
 
-            # 2. Clip to image bounds (Optional)
-            # OpenCV handles points outside the image gracefully, so clipping is technically 
-            # not required and might distort the shape if a corner is far off-screen.
-            # points_2d[:, 0] = np.clip(points_2d[:, 0], 0, camera.width - 1)
-            # points_2d[:, 1] = np.clip(points_2d[:, 1], 0, camera.height - 1)
-
-            # 3. Generate Convex Hull and Draw
-            if len(points_2d) >= 3:
-                hull = cv2.convexHull(points_2d)
+            # Project to 2D using camera model (pycolmap)
+            corners_cam_2d = get_safe_2d_projection(img, camera, corners_world)  
+            if len(corners_cam_2d) >= 3:
+                points_int = corners_cam_2d.astype(np.int32)
+                hull = cv2.convexHull(points_int)
                 cv2.fillPoly(mask, [hull], 255)
+
+            # old approach
+            """ corners_cam_2d = []
+            for corner_world in corners_world:
+                corner_cam = img.project_point(corner_world)  # Single point projection
+                if corner_cam is not None:
+                    corners_cam_2d.append(corner_cam) 
+
+            for i, c in enumerate(corners_cam_2d):
+                print(c, np.array(c).shape, type(c))
+
+            corners_cam_2d = np.array(corners_cam_2d)
+
+            # Keep points in front of camera,
+            #valid = corners_cam_2d[:, 2] > 1e-6
+            #valid_corners = corners_cam_2d[valid] 
+
+            # check not needed for pycolmap projection, returns None for invalid
+            valid_corners = corners_cam_2d
+
+            if len(valid_corners) > 0:
+                # 1. Cast directly to int32 (points are already in pixel coordinates)
+                points_2d = valid_corners.astype(np.int32)
+
+                # 2. Clip to image bounds (Optional)
+                # OpenCV handles points outside the image gracefully, so clipping is technically 
+                # not required and might distort the shape if a corner is far off-screen.
+                # points_2d[:, 0] = np.clip(points_2d[:, 0], 0, camera.width - 1)
+                # points_2d[:, 1] = np.clip(points_2d[:, 1], 0, camera.height - 1)
+
+                # 3. Generate Convex Hull and Draw
+                if len(points_2d) >= 3:
+                    hull = cv2.convexHull(points_2d)
+                    cv2.fillPoly(mask, [hull], 255)
+            """
 
         # Save Mask. Filename must match image name + .png usually
         mask_filename = Path(img.name).with_suffix(".png")
