@@ -43,7 +43,7 @@ def get_best_fit_circle(points_2d):
         radius = np.max(np.linalg.norm(points_2d - center, axis=1))
         return center, radius
 
-def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buffer_dist=10.0):
+def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buffer_dist=10.0, geofence_mode='circle'):
     """
     Filters a COLMAP model using a cylinder defined by the PCA plane of camera positions.
     Automatically detects the dominant flight plane (XY, XZ, or tilted).
@@ -98,24 +98,62 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
     
     # Create Hull
     base_shape = MultiPoint(cam_2d).convex_hull
-    geofence_poly = base_shape.buffer(buffer_dist)
-    prepared_poly = prep(geofence_poly) # Optimization
+    # ### NEW: Logic split based on mode
+
+    simple_cylinder_radius = 0.0
+    world_geom_center = np.array([0.0, 0.0, 0.0])
+    if geofence_mode == 'circle':
+        print("Mode: Circle (Smallest enclosing circle of Hull)")
+        
+        # Calculate the geometric center of the HULL (not the average of points)
+        # This provides a tighter fit for irregular flight paths
+        hull_center_pt = base_shape.centroid
+        circle_center_2d = np.array([hull_center_pt.x, hull_center_pt.y])
+        
+        # Get coordinates of the hull vertices to find the furthest point
+        if hasattr(base_shape, 'exterior'):
+            hull_coords = np.array(base_shape.exterior.coords)
+        else:
+            # Fallback if hull is degenerate (line/point)
+            hull_coords = cam_2d
+
+        # Calculate radius: Max distance from Hull Center to Hull Vertices + Buffer
+        dists = np.linalg.norm(hull_coords - circle_center_2d, axis=1)
+        # ### MODIFIED: Radius is derived from hull extent
+        simple_cylinder_radius = np.max(dists) + buffer_dist
+
+        # draw circle 
+        prepared_poly = Point(circle_center_2d).buffer(simple_cylinder_radius)
+        
+        # Calc world center for reference
+        world_geom_center = centroid + (circle_center_2d[0] * plane_basis_u) + (circle_center_2d[1] * plane_basis_v)
+        
+        print(f"Computed Enclosing Radius: {simple_cylinder_radius:.2f}")
+    else: # mode == 'hull'
+        print("Mode: Convex Hull Polygon")
+        
+        geofence_poly = base_shape.buffer(buffer_dist)
+        prepared_poly = prep(geofence_poly) # Optimization
+        
+        print(f"Computed Hull Area on PCA Plane: {geofence_poly.area:.2f}")
+        
+        # For 'hull' mode, we usually define the "trainer cylinder" loosely based on the centroid
+        # just for the sake of printing valid arguments below.
+        circle_center_2d = np.mean(cam_2d, axis=0)
+
+        # Formula: World = Centroid + (u * BasisU) + (v * BasisV)
+        world_geom_center = centroid + (circle_center_2d[0] * plane_basis_u) + (circle_center_2d[1] * plane_basis_v)
+            # ==============================================================================
+        # Calculate simple Circular Cylinder parameters for gsplat trainer
+        # ==============================================================================
+        # We calculate the max distance of any camera from the centroid (in 2D plane)
+        # and add the buffer_dist. This creates a circle that fully encloses your hull.
+        cam_dists_from_center = np.linalg.norm(cam_2d, axis=1)
+        dists_from_geom_center = np.linalg.norm(cam_2d - circle_center_2d, axis=1)
+
+        simple_cylinder_radius = np.max(dists_from_geom_center) + buffer_dist
+        print(f"Computed Hull Area: {geofence_poly.area:.2f}")
     
-    print(f"Computed Hull Area on PCA Plane: {geofence_poly.area:.2f}")
-
-    # ==============================================================================
-    # Calculate simple Circular Cylinder parameters for gsplat trainer
-    # ==============================================================================
-    # We calculate the max distance of any camera from the centroid (in 2D plane)
-    # and add the buffer_dist. This creates a circle that fully encloses your hull.
-    cam_dists_from_center = np.linalg.norm(cam_2d, axis=1)
-    dists_from_geom_center = np.linalg.norm(cam_2d - circle_center_2d, axis=1)
-
-    simple_cylinder_radius = np.max(dists_from_geom_center) + buffer_dist
-    #simple_cylinder_radius = fitted_radius + buffer_dist
-
-    # Formula: World = Centroid + (u * BasisU) + (v * BasisV)
-    world_geom_center = centroid + (circle_center_2d[0] * plane_basis_u) + (circle_center_2d[1] * plane_basis_v)
 
     c_str = f"{world_geom_center[0]:.4f},{world_geom_center[1]:.4f},{world_geom_center[2]:.4f}"
     n_str = f"{normal_axis[0]:.4f},{normal_axis[1]:.4f},{normal_axis[2]:.4f}"
@@ -174,8 +212,10 @@ def compute_adaptive_geofence(reconstruction,
     Args:
         reconstruction (pycolmap.Reconstruction): The coarse sparse model.
         silo_ratio (float): Radius of the silo as a percentage of orbit radius (0.25 = 25%).
+        height_center_bias (float): Bias for height center (0.0=ground, 1.0=roof).
         min_top_points (int): Minimum number of points to analyze for roof height determination.
         roof_buffer (float): Percentage of height to add as empty space above the roof.
+        safety_margin (float): Extra margin to add to the silo radius (as a percentage).
         
     Returns:
         tuple: (bbox_min, bbox_max) as numpy arrays [x,y,z].
@@ -198,6 +238,85 @@ def compute_adaptive_geofence(reconstruction,
         avg_radius = np.mean(dists)
         
         return center_xy, avg_radius
+    
+    def _get_orbit_stats_pca(images):
+        # --- Step 1: Extract Camera Centers ---
+        cam_centers = []
+        for _, image in images.items():
+            if image.has_pose: # Only use registered cameras
+                cam_centers.append(image.projection_center())
+                
+        cam_centers = np.array(cam_centers) # Shape (N, 3)
+
+        if len(cam_centers) < 3:
+            raise ValueError("Need at least 3 cameras to compute a PCA plane.")
+
+        # --- Step 2: Perform PCA to find the 'Flight Plane' ---
+        # 1. Center the data
+        centroid = np.mean(cam_centers, axis=0)
+        centered_data = cam_centers - centroid
+        
+        # 2. Singular Value Decomposition
+        # U: Rotation, S: Scaling (Variance), Vh: Principal axes
+        # Vh[0] is the primary axis of variance
+        # Vh[1] is the secondary axis
+        # Vh[2] is the normal vector to the plane (least variance)
+        u, s, vh = np.linalg.svd(centered_data)
+        
+        # These two vectors define our custom 2D plane "Ground"
+        plane_basis_u = vh[0] 
+        plane_basis_v = vh[1]
+        normal_axis = vh[2]
+        
+        print(f"PCA Plane Normal (Perpendicular to flight): {vh[2]}")
+
+        # --- Step 3: Define Projection Helper ---
+        def project_to_pca_plane(points_3d):
+            """Projects 3D points onto the 2D PCA plane (u, v coords)."""
+            # Vector from centroid to point
+            vecs = points_3d - centroid
+            # Dot product with basis vectors
+            u_coords = np.dot(vecs, plane_basis_u)
+            v_coords = np.dot(vecs, plane_basis_v)
+            return np.column_stack((u_coords, v_coords))
+
+        # --- Step 4: Create Convex Hull on the PCA Plane ---
+        # Project cameras to 2D
+        cam_2d = project_to_pca_plane(cam_centers)
+
+        # A. Get the geometric center of the flight arc
+        circle_center_2d, fitted_radius = get_best_fit_circle(cam_2d)
+        
+        # Create Hull
+        base_shape = MultiPoint(cam_2d).convex_hull
+        # ### NEW: Logic split based on mode
+
+        simple_cylinder_radius = 0.0
+        world_geom_center = np.array([0.0, 0.0, 0.0])
+
+        # Calculate the geometric center of the HULL (not the average of points)
+        # This provides a tighter fit for irregular flight paths
+        hull_center_pt = base_shape.centroid
+        circle_center_2d = np.array([hull_center_pt.x, hull_center_pt.y])
+        
+        # Get coordinates of the hull vertices to find the furthest point
+        if hasattr(base_shape, 'exterior'):
+            hull_coords = np.array(base_shape.exterior.coords)
+        else:
+            # Fallback if hull is degenerate (line/point)
+            hull_coords = cam_2d
+
+        # Calculate radius: Max distance from Hull Center to Hull Vertices + Buffer
+        dists = np.linalg.norm(hull_coords - circle_center_2d, axis=1)
+        # ### MODIFIED: Radius is derived from hull extent
+        simple_cylinder_radius = np.max(dists)
+        
+        # Calc world center for reference
+        world_geom_center = centroid + (circle_center_2d[0] * plane_basis_u) + (circle_center_2d[1] * plane_basis_v)
+        
+        print(f"Computed Enclosing Radius: {simple_cylinder_radius:.2f}")
+
+        return world_geom_center, simple_cylinder_radius
 
     # --- Sub-function 2: The Silo Filter ---
     def _extract_silo_z_values(points3D, center_xy, radius_limit):
@@ -262,7 +381,8 @@ def compute_adaptive_geofence(reconstruction,
     # --- Main Execution Flow ---
     
     # 1. Geometry
-    center_xy, orbit_radius = _get_orbit_stats(reconstruction.images)
+    center_xy, orbit_radius = _get_orbit_stats_pca(reconstruction.images)
+    center_xy = center_xy[:2]  # Only XY
     silo_radius = orbit_radius * silo_ratio
     
     print(f"[Geofence] Orbit Radius: {orbit_radius:.2f}m | Silo Radius: {silo_radius:.2f}m")
