@@ -285,31 +285,40 @@ def compute_adaptive_geofence(reconstruction,
         cam_2d = project_to_pca_plane(cam_centers)
 
         # A. Get the geometric center of the flight arc
-        circle_center_2d, fitted_radius = get_best_fit_circle(cam_2d)
+        ransac_center, ransac_radius = get_best_fit_circle(cam_2d)
         
         # Create Hull
         base_shape = MultiPoint(cam_2d).convex_hull
         # ### NEW: Logic split based on mode
 
-        simple_cylinder_radius = 0.0
+        simple_hull_radius = 0.0
         world_geom_center = np.array([0.0, 0.0, 0.0])
 
         # Calculate the geometric center of the HULL (not the average of points)
         # This provides a tighter fit for irregular flight paths
         hull_center_pt = base_shape.centroid
-        circle_center_2d = np.array([hull_center_pt.x, hull_center_pt.y])
+        hull_center = np.array([hull_center_pt.x, hull_center_pt.y])
+
+        # Blend between hull center and RANSAC center for stability
+        circle_center_2d = hull_center * 0.1  + ransac_center * 0.9  
         
-        # Get coordinates of the hull vertices to find the furthest point
+        # Get coordinates of the hull vertices to find the furthest point - hull is too sparse and outlier sensitive, fallback to cam points 
+        """ hull_coords = None
         if hasattr(base_shape, 'exterior'):
             hull_coords = np.array(base_shape.exterior.coords)
-        else:
-            # Fallback if hull is degenerate (line/point)
-            hull_coords = cam_2d
+        
+        if hull_coords is None or len(hull_coords) < 30:  # Arbitrary threshold for "enough" hull points
+            print("Hull is degenerate (line/point), falling back to camera points.")
+            hull_coords = cam_2d """
 
         # Calculate radius: Max distance from Hull Center to Hull Vertices + Buffer
-        dists = np.linalg.norm(hull_coords - circle_center_2d, axis=1)
+        dists = np.linalg.norm(cam_2d - circle_center_2d, axis=1)
         # ### MODIFIED: Radius is derived from hull extent
-        simple_cylinder_radius = np.max(dists)
+        # simple_hull_radius = np.max(dists)
+        simple_hull_radius = np.percentile(dists, 90)  # 90th percentile to ignore outliers
+
+        # Average between simple cylinder radius and fitted circle radius for better generalization
+        simple_cylinder_radius = (simple_hull_radius + ransac_radius) / 2.        
         
         # Calc world center for reference
         world_geom_center = centroid + (circle_center_2d[0] * plane_basis_u) + (circle_center_2d[1] * plane_basis_v)
