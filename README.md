@@ -1,5 +1,5 @@
 # Additions
-AWS
+## AWS
 - storage mount: `/dev/sdb`
 - chosen AMI needs:
   - docker-buildx update 
@@ -8,6 +8,69 @@ AWS
   `curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 -o ~/.docker/cli-plugins/docker-compose`
 - TMP and Build Dir changes: 
 
+## Colmap 
+Colmap may create multiple models depending on the complexity of the scene. This can be fixed simply by selecting the biggest model reconstructed. A better appraoch should be found in future work
+
+## Hydra Conf
+Allows for easy configuration via a json file. It allows setting via command as well and provides functionality to run multiple runs at once with different configurations. The latter helps for quality benchmarking. 
+
+## Pipeline 
+### First Stage (Precursor - *A rough search*)
+The first stage uses [COLMAP](https://github.com/colmap/colmap) with regular and super fast features - SIFT - and spatial matching, which exploits positional GPS information in the meta data to match image features efficiently. This run executes in 1-2mins.
+
+### The intermediate
+The model from Stage 1 gives us the ability to know which areas in the images actually represent our Region of Interest (ROI). 
+From the tutorial for drone footage capturing we know that the images are captured circuling the ROI. 
+Knowing the rough camera poisitions we construct the best fitting circle describing the flight path using PCA and assume our object lies within that circle. From this we get a plane fitted in 3D. A further ransac approach gives us the circle on that plane. 
+We take the center of that circle and construct a convex hull arround all cameras. We then calculate the distance from the outer edge of the hull or all cameras positions to the circle center found by ransac and take the upper 90th percentile as a robust hull radius. To balance even further and to get the bigger picture of the flight path instead of just the outer camera poisitions we average with the radius from the PCA approach above. 
+To get a bounding box in 3d, we further need to estimate the height of our object - `_calculate_robust_heights`
+
+**Geo masking**
+Given the bounding box, we can then project such box into the camera view of each reconstructed camera. With some view frustum limiting this gets us a mask that describes per image, what is inbound and what is outbound (not considered in Stage 2). 
+
+Example: 
+
+<div style="display: flex; gap: 20px;">
+  <div style="flex: 1;">
+    <img src="images/top.png" alt="scene top" title="scene from on top showing flight path" width="100%"/>
+  </div>
+  <div style="flex: 1;">
+    <img src="images/side.png" alt="scene side" title="scene from side showing flight path" width="100%"/>
+  </div>
+</div>
+<p style="text-align: center; font-size: 0.9em; color: #666;">Top view (left) and side view (right) of the flight path</p>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+  <div>
+    <img src="images/snapshot02.png" alt="scene mesh" title="same scene shown in meshlab" width="100%"/>
+  </div>
+  <div>
+    <img src="images/snapshot03.png" alt="scene mesh bbox" title="bounding box" width="100%"/>
+  </div>
+  <div>
+    <img src="images/snapshot04.png" alt="scene mesh bbox" title="bounding box" width="100%"/>
+  </div>
+  <div>
+    <img src="images/snapshot05.png" alt="scene mesh bbox" title="bounding box" width="100%"/>
+  </div>
+</div>
+<p style="text-align: center; font-size: 0.9em; color: #666;">3D bounding box, points outside will be excluded by image mask</p>
+
+<div style="display: flex; gap: 20px;">
+  <div style="flex: 1;">
+    <img src="images/mask_overlay_1_small.JPG" alt="scene top" title="mask from bounding box" width="100%"/>
+  </div>
+  <div style="flex: 1;">
+    <img src="images/mask_overlay_2_small.JPG" alt="scene side" title="mask from bounding box" width="100%"/>
+  </div>
+</div>
+<p style="text-align: center; font-size: 0.9em; color: #666;">3D bounding box projected into image space</p>
+
+
+
+
+
+### Second STage (Fine Reconstruction - *Exploiting*)
 
 
 # hloc - the hierarchical localization toolbox
