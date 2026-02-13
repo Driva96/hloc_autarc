@@ -344,6 +344,114 @@ cfg = compose(
 )
 ```
 
+## Parallel Job Spawning (Multirun)
+
+Hydra supports running multiple configurations in parallel using the `--multirun` flag (or `-m` for short). This is useful for parameter sweeps, comparing different configurations, or running experiments across multiple datasets.
+
+### Basic Multirun Example
+
+To run the pipeline with multiple configurations in parallel, you can use Hydra's multirun mode. For example, to test different stage1 settings:
+
+```python
+# In a Python script (not directly in the notebook)
+from hydra import main
+
+@main(config_path="../configs", config_name="config", version_base=None)
+def run_pipeline(cfg):
+    # Your pipeline code here
+    print(f"Running with stage1={cfg.stage1}")
+    # ... rest of pipeline ...
+
+if __name__ == "__main__":
+    run_pipeline()
+```
+
+Then run from command line:
+
+```bash
+# Compare default vs fast stage1 configurations
+python pipeline_script.py -m stage1=default,fast
+
+# Test multiple datasets
+python pipeline_script.py -m dataset=friedrichs_house,cunit,fredde
+
+# Sweep over multiple parameters
+python pipeline_script.py -m stage1=default,fast mvs=default,fast
+```
+
+### Example: Comparing Speed vs Quality
+
+Test the pipeline with different speed/quality tradeoffs:
+
+```bash
+# Run 4 configurations in parallel: 
+# 1. default stage1 + default mvs
+# 2. default stage1 + fast mvs
+# 3. fast stage1 + default mvs
+# 4. fast stage1 + fast mvs
+python pipeline_script.py -m stage1=default,fast mvs=default,fast
+```
+
+### Example: Dataset Comparison
+
+Run the same configuration across multiple datasets:
+
+```bash
+# Process all three datasets with high-quality MVS
+python pipeline_script.py -m dataset=friedrichs_house,cunit,fredde mvs=high_quality
+```
+
+### Multirun Output
+
+When using multirun, Hydra creates separate output directories for each run:
+
+```
+multirun/
+├── 2024-02-13/
+│   ├── 12-00-00/           # Timestamp of multirun launch
+│   │   ├── 0/              # First configuration
+│   │   │   ├── .hydra/
+│   │   │   └── outputs...
+│   │   ├── 1/              # Second configuration
+│   │   │   ├── .hydra/
+│   │   │   └── outputs...
+│   │   └── 2/              # Third configuration
+│   │       ├── .hydra/
+│   │       └── outputs...
+```
+
+Each subdirectory contains the complete configuration and outputs for that specific run.
+
+### Multirun Launcher Configuration
+
+By default, Hydra runs jobs sequentially. To run them in parallel, configure a launcher plugin:
+
+```yaml
+# Add to your config.yaml or use as override
+defaults:
+  - override hydra/launcher: joblib  # or 'basic' for sequential
+
+hydra:
+  launcher:
+    n_jobs: 4  # Number of parallel jobs (joblib launcher)
+```
+
+Or use command-line override:
+
+```bash
+python pipeline_script.py -m stage1=default,fast hydra/launcher=joblib hydra.launcher.n_jobs=4
+```
+
+### Note for Notebook Users
+
+The multirun feature is designed for Python scripts rather than Jupyter notebooks. To use multirun:
+
+1. Convert your notebook cells to a Python script
+2. Wrap your pipeline in a Hydra `@main` decorated function
+3. Run from the command line with the `-m` flag
+
+This approach is ideal for running parameter sweeps or batch processing multiple datasets automatically.
+
 ## Benefits
 
 1. **No Code Changes**: Switch experiments without editing code
@@ -352,6 +460,7 @@ cfg = compose(
 4. **Composition**: Mix and match different configuration groups
 5. **Inheritance**: Share common settings across configurations
 6. **Documentation**: Configuration files serve as documentation
+7. **Parallel Execution**: Run multiple experiments simultaneously with multirun
 
 ## Troubleshooting
 
