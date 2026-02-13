@@ -1,0 +1,8 @@
+all: false
+stage_1: false
+stage_2: true
+masks: false
+resized: true
+features: true
+matches: true
+mvs: true

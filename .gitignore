@@ -9,3 +9,7 @@ datasets/*
 !datasets/sacre_coeur/
 datasets/sacre_coeur/query
 *.log
+
+# Hydra outputs
+multirun/
+.hydra/

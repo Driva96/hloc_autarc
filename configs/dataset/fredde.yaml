@@ -1,0 +1,3 @@
+experiment: "fredde"
+root: "/data/"
+raw_images: "${dataset.root}/${dataset.experiment}/full"

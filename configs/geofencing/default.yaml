@@ -1,0 +1,8 @@
+silo_radius_ratio: 0.78
+safety_margin: 0.025
+height_center_bias: -0.8
+buffer_distance: 2.0
+
+masks:
+  enabled: true
+  format: "png"

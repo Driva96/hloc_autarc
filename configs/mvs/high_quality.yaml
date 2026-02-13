@@ -1,0 +1,23 @@
+openmvs_bin: "/usr/local/bin/OpenMVS/"
+
+densify:
+  max_resolution: 2400
+  min_resolution: 800
+  sub_resolution_levels: 3
+  postprocess_dmaps: true
+  fusion_mode: 0
+
+mesh:
+  poisson_depth: 11
+  preclean: true
+  threads: null
+  target_faces: 2000000
+  max_hole_size: 500000
+
+texture:
+  use_highres: true
+  scale: 1.0
+
+postprocess:
+  close_holes: true
+  smooth_iterations: 3

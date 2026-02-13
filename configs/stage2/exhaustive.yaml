@@ -1,0 +1,13 @@
+extractor: "superpoint_max"
+matcher: "lightglue"
+
+pairs:
+  mode: "exhaustive"
+  neighbors_to_match: null
+
+mapper:
+  max_runtime_seconds: 1800
+
+gps_priors:
+  std_xy: ${stage1.gps_priors.std_xy}
+  std_z: ${stage1.gps_priors.std_z}
