@@ -31,7 +31,9 @@ configs/
 └── reset/
     ├── conservative.yaml         # Don't reset anything
     ├── aggressive.yaml           # Reset everything
-    └── stage2_only.yaml          # Reset only stage 2
+    ├── stage1_only.yaml          # Reset only stage 1
+    ├── stage2_only.yaml          # Reset only stage 2
+    └── mvs_only.yaml             # Reset only MVS
 ```
 
 ## Configuration Groups
@@ -71,6 +73,9 @@ matching:
 
 mapper:
   max_runtime_seconds: 300         # Maximum runtime for COLMAP mapper
+
+camera:
+  mode: "PER_FOLDER"               # PER_FOLDER (single camera) or AUTO (multiple cameras/zoom)
 ```
 
 **Available options:**
@@ -113,10 +118,6 @@ silo_radius_ratio: 0.78            # Percentage of orbit radius for silo
 safety_margin: 0.025               # Additional margin
 height_center_bias: -0.8           # Height centering bias
 buffer_distance: 2.0               # Meters to expand geofence
-
-masks:
-  enabled: true
-  format: "png"
 ```
 
 **Available options:**
@@ -183,7 +184,9 @@ mvs: false                         # Reset MVS workspace
 **Available options:**
 - `conservative` (default) - Don't reset anything
 - `aggressive` - Reset everything
-- `stage2_only` - Reset only stage 2 and its dependencies
+- `stage1_only` - Reset only stage 1 and its dependencies (masks, resized images)
+- `stage2_only` - Reset only stage 2 and its dependencies (features, matches, resized images, MVS)
+- `mvs_only` - Reset only MVS workspace
 
 ## Using the Configuration System
 

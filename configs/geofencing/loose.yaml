@@ -2,7 +2,3 @@ silo_radius_ratio: 0.90
 safety_margin: 0.05
 height_center_bias: 0.0
 buffer_distance: 3.0
-
-masks:
-  enabled: true
-  format: "png"
