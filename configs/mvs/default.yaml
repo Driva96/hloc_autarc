@@ -6,9 +6,9 @@ densify:
   # MVS can use different resolution than feature extraction.
   max_resolution: 1600
   min_resolution: 640
-  sub_resolution_levels: 2
-  postprocess_dmaps: true
-  fusion_mode: 0
+  sub_resolution_levels: 3  # How many sub resolutions to guide the high resolution densification
+  postprocess_dmaps: 2  # 2=fill gaps in depth maps, 1=remove speckles, 0=disabled
+  fusion_mode: 0  # 0=depth-maps & fusion (default), -1=depth-maps only, -2=fuse disparity-maps
 
 mesh:
   poisson_depth: 9

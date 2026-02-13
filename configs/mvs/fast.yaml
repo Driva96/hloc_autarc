@@ -4,8 +4,8 @@ densify:
   max_resolution: 1200
   min_resolution: 480
   sub_resolution_levels: 2
-  postprocess_dmaps: false
-  fusion_mode: -1
+  postprocess_dmaps: 1  # 2=fill gaps, 1=remove speckles (fast), 0=disabled
+  fusion_mode: -2  # -2=fuse disparity-maps (fast), 0=depth-maps & fusion, -1=depth-maps only
 
 mesh:
   poisson_depth: 8

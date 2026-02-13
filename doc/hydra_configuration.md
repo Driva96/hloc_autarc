@@ -138,9 +138,9 @@ densify:
   # fine_max_img_size (which is derived from the extractor config in stage2)
   max_resolution: 1600             # Max resolution for dense point cloud
   min_resolution: 640              # Min resolution
-  sub_resolution_levels: 2         # Sub-resolution levels
-  postprocess_dmaps: true          # Post-process depth maps
-  fusion_mode: 0                   # Fusion mode (0=global - better for small objects; -1=DepthMap - better for large scenes)
+  sub_resolution_levels: 3         # How many sub resolutions to guide high resolution densification
+  postprocess_dmaps: 2             # 2=fill gaps, 1=remove speckles, 0=disabled
+  fusion_mode: 0                   # 0=depth-maps & fusion, -1=depth-maps only, -2=fuse disparity-maps
 
 mesh:
   poisson_depth: 9                 # Poisson reconstruction depth
@@ -159,9 +159,23 @@ postprocess:
 ```
 
 **Available options:**
-- `default` - Standard quality (1600px MVS resolution, 1M faces)
-- `high_quality` - High quality (2400px MVS resolution, 2M faces, slower)
-- `fast` - Fast reconstruction (1200px MVS resolution, 500k faces, lower quality)
+- `default` - Standard quality (1600px MVS resolution, 1M faces, fill gaps in depth maps)
+- `high_quality` - High quality (2400px MVS resolution, 2M faces, slower, fill gaps)
+- `fast` - Fast reconstruction (1200px MVS resolution, 500k faces, fuse disparity-maps, remove speckles)
+
+**MVS Densify Parameters:**
+
+- `postprocess_dmaps`: Controls depth map post-processing
+  - `2` - Fill gaps in depth maps (recommended for default/high_quality)
+  - `1` - Remove speckles from depth maps (recommended for fast)
+  - `0` - Disabled (no post-processing)
+
+- `fusion_mode`: Controls how depth/disparity maps are processed
+  - `0` - Depth-maps & fusion (default, best quality)
+  - `-1` - Depth-maps only (skip fusion)
+  - `-2` - Fuse disparity-maps (faster, for fast config)
+
+- `sub_resolution_levels`: Number of sub-resolutions to guide high-resolution densification (1-4, higher=better quality but slower)
 
 **Note:** The MVS max_resolution is independent of fine_max_img_size (used for feature extraction). MVS reconstruction can use different image resolutions optimized for dense point cloud generation.
 
