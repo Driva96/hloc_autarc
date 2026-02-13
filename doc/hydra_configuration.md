@@ -139,7 +139,7 @@ densify:
   min_resolution: 640              # Min resolution
   sub_resolution_levels: 2         # Sub-resolution levels
   postprocess_dmaps: true          # Post-process depth maps
-  fusion_mode: 0                   # Fusion mode (0=global)
+  fusion_mode: 0                   # Fusion mode (0=global - better for small objects; -1=DepthMap - better for large scenes)
 
 mesh:
   poisson_depth: 9                 # Poisson reconstruction depth
