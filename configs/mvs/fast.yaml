@@ -4,15 +4,18 @@ densify:
   max_resolution: 1200
   min_resolution: 480
   sub_resolution_levels: 2
-  postprocess_dmaps: 1  # 2=fill gaps, 1=remove speckles (fast), 0=disabled
+  postprocess_dmaps: 3  # 2=fill gaps, 1=remove speckles (fast), 0=disabled, 3 = fill gaps and remove speckles (quality)
   fusion_mode: -2  # -2=fuse disparity-maps (fast), 0=depth-maps & fusion, -1=depth-maps only
 
 mesh:
   poisson_depth: 8
   preclean: false
   threads: null
+  poisson_pointweight: 0.0
   target_faces: 500000
   max_hole_size: 2000000
+  offset_value: 0.01 # how far the generated surface is pushed outward [meters]
+  alpha_value: 0.3
 
 texture:
   use_highres: false
