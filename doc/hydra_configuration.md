@@ -133,6 +133,8 @@ Controls OpenMVS dense reconstruction, meshing, and texturing:
 openmvs_bin: "/usr/local/bin/OpenMVS/"
 
 densify:
+  # Note: max_resolution is for MVS dense reconstruction and can differ from
+  # fine_max_img_size (which is derived from the extractor config in stage2)
   max_resolution: 1600             # Max resolution for dense point cloud
   min_resolution: 640              # Min resolution
   sub_resolution_levels: 2         # Sub-resolution levels
@@ -156,9 +158,11 @@ postprocess:
 ```
 
 **Available options:**
-- `default` - Standard quality (1600px, 1M faces)
-- `high_quality` - High quality (2400px, 2M faces, slower)
-- `fast` - Fast reconstruction (1200px, 500k faces, lower quality)
+- `default` - Standard quality (1600px MVS resolution, 1M faces)
+- `high_quality` - High quality (2400px MVS resolution, 2M faces, slower)
+- `fast` - Fast reconstruction (1200px MVS resolution, 500k faces, lower quality)
+
+**Note:** The MVS max_resolution is independent of fine_max_img_size (used for feature extraction). MVS reconstruction can use different image resolutions optimized for dense point cloud generation.
 
 ### Reset Configuration
 

@@ -1,6 +1,9 @@
 openmvs_bin: "/usr/local/bin/OpenMVS/"
 
 densify:
+  # Max resolution for dense reconstruction. Note: This is independent of 
+  # fine_max_img_size (which is derived from the extractor config).
+  # MVS can use different resolution than feature extraction.
   max_resolution: 1600
   min_resolution: 640
   sub_resolution_levels: 2
