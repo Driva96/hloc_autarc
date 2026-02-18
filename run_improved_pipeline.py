@@ -51,6 +51,30 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf, DictConfig
 
 # Setup Logging
+# Setup Logging
+def configure_logging(log_file: Path | None = None, level: int = logging.INFO) -> None:
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    root = logging.getLogger()
+    root.setLevel(level)
+    root.handlers.clear()
+
+    # Terminal
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setLevel(level)
+    sh.setFormatter(formatter)
+    root.addHandler(sh)
+
+    # File (optional)
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        fh.setLevel(level)
+        fh.setFormatter(formatter)
+        root.addHandler(fh)
+
+logger = logging.getLogger("ImprovedPipeline")
+configure_logging()  # default: terminal only
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -176,6 +200,10 @@ def main(config_name="config", overrides=None):
     
     # Create output directories
     output_root.mkdir(parents=True, exist_ok=True)
+
+    # Enable file logging (default path if not provided)
+    file_log_path = Path(Config.log_file) if hasattr(Config, "log_file") else (output_root / "pipeline.log")
+    configure_logging(log_file=file_log_path, level=Config.logging.level)
     
     # Get fine_max_img_size from extractor config
     extractor_conf = extract_features.confs[Config.stage2.extractor]
@@ -279,8 +307,6 @@ def main(config_name="config", overrides=None):
     
     # Recreate necessary directories
     paths["resized_images"].mkdir(parents=True, exist_ok=True)
-    paths["raw_masks"].mkdir(parents=True, exist_ok=True)
-    paths["masks"].mkdir(parents=True, exist_ok=True)
     
     # ---------------------------------------------------------------------------
     # 3. STAGE 1: Coarse Reconstruction (SIFT + COLMAP)
