@@ -257,11 +257,11 @@ def main(config_name="config", overrides=None):
     logger.info("STAGE 1: Coarse Reconstruction")
     logger.info("="*80)
     
+    # Create a list of image names in images (dir) without subdirs
+    images_list = [f.name for f in raw_images_path.iterdir() if f.is_file() and f.suffix.lower() in [".jpg", ".jpeg", ".png"]]
+    
     if not (paths["coarse_sfm"] / "0" / "cameras.bin").exists():
         logger.info("Starting Coarse Feature Extraction...")
-
-        # Create a list of image names in images (dir) without subdirs
-        images_list = [f.name for f in raw_images_path.iterdir() if f.is_file() and f.suffix.lower() in [".jpg", ".jpeg", ".png"]]
         
         # 1. Extract Features (SIFT via COLMAP)
         pycolmap.extract_features(
@@ -377,7 +377,7 @@ def main(config_name="config", overrides=None):
     
     # 1. Load Coarse Model
     # This model was built using the Raw Images, so its cameras have full resolution intrinsics.
-    coarse_model = pycolmap.Reconstruction(paths["coarse_sfm"] / best_model_dir.name)
+    coarse_model = pycolmap.Reconstruction(best_model_dir)
 
     # 2. Calculate Adaptive Bounding Box
     bbox_min, bbox_max = geofencing.compute_adaptive_geofence(
@@ -646,14 +646,14 @@ def main(config_name="config", overrides=None):
         undistorted_dir.mkdir(parents=True, exist_ok=True)
         
         # Use pycolmap to undistort
-        rec = pycolmap.Reconstruction(str(best_model_dir / "0"))
+        rec = pycolmap.Reconstruction(str(best_model_dir))
         
         # Export to OpenMVS format
         logger.info("Exporting to OpenMVS...")
         
         run_cmd([
             "colmap", "model_converter",
-            "--input_path", str(best_model_dir / "0"),
+            "--input_path", str(best_model_dir),
             "--output_path", str(paths["mvs_root"] / "sparse.ply"),
             "--output_type", "PLY"
         ])
