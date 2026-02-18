@@ -2,7 +2,7 @@ coarse_max_img_size: 900
 coarse_num_features: 2048
 
 gps_priors:
-  std_xy: 1.0
+  std_xy: 2.0
   std_z: 3.0
 
 matching:

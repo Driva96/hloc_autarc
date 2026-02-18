@@ -3,7 +3,7 @@ matcher: "lightglue"
 
 pairs:
   mode: "pose"
-  neighbors_to_match: 10
+  neighbors_to_match: 15
 
 mapper:
   max_runtime_seconds: 900
