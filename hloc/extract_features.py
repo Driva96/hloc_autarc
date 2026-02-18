@@ -228,38 +228,40 @@ class ImageDataset(torch.utils.data.Dataset):
             mask_path = self.mask_dir / f'{Path(name).stem}.png'
             if not mask_path.exists():
                 mask_path = self.mask_dir / f'{Path(name).stem}.mask.png'
-            if mask_path.exists():
-                # Read mask (Gray: HxW)
-                mask = read_image(mask_path, grayscale=True)
-                
-                # CRITICAL: Resize mask to match the current image size
-                # image is (C, H, W), so we need H and W
-                current_h, current_w = image.shape[1], image.shape[2]
-                
-                if mask.shape[:2] != (current_h, current_w):
-                    # Use INTER_NEAREST to keep mask binary (0 or 255), avoid blurry edges
-                    mask = cv2.resize(mask, (current_w, current_h), interpolation=cv2.INTER_NEAREST)
+            assert mask_path.exists(), f"Mask not found for {name} at {mask_path}. Make sure to provide a mask even for images without masked regions (all white)."
+            # Read mask (Gray: HxW)
+            mask = read_image(mask_path, grayscale=True)
+            
+            # CRITICAL: Resize mask to match the current image size
+            # image is (C, H, W), so we need H and W
+            current_h, current_w = image.shape[1], image.shape[2]
+            
+            if mask.shape[:2] != (current_h, current_w):
+                # Use INTER_NEAREST to keep mask binary (0 or 255), avoid blurry edges
+                mask = cv2.resize(mask, (current_w, current_h), interpolation=cv2.INTER_NEAREST)
 
-                # Convert mask to float 0.0 or 1.0 and add channel dim: (H, W) -> (1, H, W)
-                # Assuming mask is white (255) where valid and black (0) where masked
-                mask_tensor = (mask > 0).astype(np.float32)[None]
+            # Convert mask to float 0.0 or 1.0 and add channel dim: (H, W) -> (1, H, W)
+            # Assuming mask is white (255) where valid and black (0) where masked
+            mask_tensor = (mask > 0).astype(np.float32)[None]
 
-                # Apply mask using simple NumPy multiplication (broadcasting handles the channels)
-                # image is 0..1, mask is 0..1. Result is 0..1
-                masked_image = image * mask_tensor
+            # --- DEBUGGING / SAVING (Optional) ---
+            """ # Apply mask using simple NumPy multiplication (broadcasting handles the channels)
+            # image is 0..1, mask is 0..1. Result is 0..1
+            masked_image = image * mask_tensor
 
-                # --- DEBUGGING / SAVING (Optional) ---
-                # To save, we must convert back to HWC and 0-255 uint8
-                debug_img = (masked_image.transpose(1, 2, 0) * 255.0).astype(np.uint8)
-                if debug_img.shape[2] == 1:
-                    debug_img = debug_img[:, :, 0] # Remove channel dim for grayscale save
-                (self.root / 'masked').mkdir(exist_ok=True, parents=True)
-                # PIL.Image.fromarray(debug_img).save(self.root /'masked' /f'{Path(name).stem}.png', quality=95)
-                # -------------------------------------
+            # To save, we must convert back to HWC and 0-255 uint8
+            debug_img = (masked_image.transpose(1, 2, 0) * 255.0).astype(np.uint8)
+            if debug_img.shape[2] == 1:
+                debug_img = debug_img[:, :, 0] # Remove channel dim for grayscale save
+            (self.root / 'masked').mkdir(exist_ok=True, parents=True)
+            PIL.Image.fromarray(debug_img).save(self.root /'masked' /f'{Path(name).stem}.png', quality=95) """
+            # -------------------------------------
 
-                # Update data dict
-                data['mask'] = mask_tensor # Optional: store mask if needed by model
-                # data['image'] = masked_image # Update image with masked version
+            # Update data dict
+            data['mask'] = mask_tensor # Optional: store mask if needed by model
+
+            # NOTE: NEVER overwrite the original image in data, as feature extractors will fail with high contrats masked images
+            # data['image'] = masked_image # Update image with masked version
         return data
 
     def __len__(self):
@@ -317,9 +319,9 @@ def main(
             h, w = mask.shape
             
             # 2. Safe Indexing (Prevent crashes for out-of-bound predictions)
-            x = kps[:, 0].astype(int)
-            y = kps[:, 1].astype(int)
-
+            x = np.round(kps[:, 0]).astype(int)
+            y = np.round(kps[:, 1]).astype(int)
+            
             # Check A: Is point strictly within image bounds?
             inside_x = (x >= 0) & (x < w)
             inside_y = (y >= 0) & (y < h)
@@ -333,11 +335,26 @@ def main(
             on_mask = mask[y_safe, x_safe] > 0
 
             # Combine checks
-            valid_keypoint = inside_image & on_mask
-
-            # 3. Apply Filter
+            valid_keypoint = inside_image & on_mask 
             print(f"[{name}] KPs total: {len(kps)} | In mask: {np.sum(valid_keypoint)} | % of on mask {np.sum(on_mask)/on_mask.size} | image size {np.min(kps), np.max(kps)} | Valid mask: {np.sum(valid_keypoint)}")
             
+            """ # Alternative check:
+            # Check bounds and mask value
+            # Note: We check 0 <= x < w because round(w-0.1) can be w, which is out of bounds
+            inside_x = (x >= 0) & (x < w)
+            inside_y = (y >= 0) & (y < h)
+            
+            # Initialize valid array as False
+            valid_keypoint = np.zeros(len(kps), dtype=bool)
+            
+            # Only check mask for points clearly inside image dimensions to avoid IndexErrors
+            safe_indices = inside_x & inside_y
+            
+            # Filter: Must be in bounds AND mask value must be > 0
+            # We only query the mask for safe indices
+            valid_keypoint[safe_indices] = mask[y[safe_indices], x[safe_indices]] > 0 """
+
+            # 3. Apply Filter
             pred['keypoints'] = pred['keypoints'][valid_keypoint]
             if 'keypoint_scores' in pred:
                 pred['keypoint_scores'] = pred['keypoint_scores'][valid_keypoint]
