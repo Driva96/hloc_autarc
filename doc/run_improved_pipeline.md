@@ -4,13 +4,16 @@ This document describes how to use the `run_improved_pipeline.py` script, which 
 
 ## Overview
 
-The Improved Pipeline implements a two-stage coarse-to-fine photogrammetry pipeline for high-quality 3D reconstruction:
+The Improved Pipeline implements a complete coarse-to-fine photogrammetry pipeline for high-quality 3D reconstruction:
 
 1. **Stage 1 (Coarse)**: Fast SIFT + COLMAP reconstruction on downsampled images
 2. **Geofencing**: Generate 3D bounding box and 2D masks to exclude background
 3. **Stage 2 (Fine)**: High-precision SuperPoint + LightGlue reconstruction
-4. **Dense Reconstruction**: OpenMVS dense point cloud and mesh generation
-5. **Output**: Results ready for Gaussian Splatting or mesh texturing
+4. **Dense Reconstruction**: OpenMVS dense point cloud generation
+5. **Meshing**: Poisson surface reconstruction, cropping, and cleanup with PyMeshLab
+6. **Refinement**: OpenMVS mesh refinement for improved detail
+7. **Texturing**: High-resolution texture mapping with texrecon
+8. **Output**: Complete textured 3D model ready for visualization, plus geofenced sparse model for Gaussian Splatting
 
 ## Requirements
 
@@ -23,6 +26,9 @@ The script requires:
 - Python >= 3.7
 - PyTorch
 - COLMAP
+- OpenMVS (InterfaceCOLMAP, DensifyPointCloud, RefineMesh)
+- PyMeshLab (for Poisson surface reconstruction and mesh processing)
+- texrecon (for high-resolution texturing)
 - Hydra configuration framework
 - hloc library and dependencies
 
@@ -127,17 +133,28 @@ The script generates the following outputs in the configured output directory:
 
 ### Sparse Reconstructions
 - `sfm_coarse/`: Stage 1 coarse reconstruction (SIFT)
-- `sfm_superpoint+lightglue/geofenced/`: Stage 2 fine reconstruction (ready for Gaussian Splatting)
+- `sfm_superpoint+lightglue/`: Stage 2 fine reconstruction
+- `sfm_superpoint+lightglue/geofenced/`: Geofenced sparse model (ready for Gaussian Splatting)
 
 ### Masks and Resized Images
 - `{raw_images}/masks_geo/`: Geofencing masks at original resolution
 - `{raw_images}/resized/`: Resized images for Stage 2
 - `{raw_images}/resized/masks_geo/`: Resized masks for Stage 2
 
-### Dense Reconstruction (if enabled)
+### Dense Reconstruction and Meshing (if MVS enabled)
 - `mvs_workspace/`: OpenMVS workspace
 - `mvs_workspace/scene_dense.ply`: Dense point cloud
-- `mvs_workspace/scene_mesh.ply`: Reconstructed mesh (if completed)
+- `mvs_workspace/scene_mesh_uncropped.ply`: Initial Poisson reconstruction
+- `mvs_workspace/mesh_poisson.ply`: Cropped and cleaned mesh
+- `mvs_workspace/mesh_poisson_before_refine.ply`: Pre-refinement backup
+- `mvs_workspace/scene_mesh_refined.ply`: OpenMVS refined mesh
+- `mvs_workspace/meshed_model_decimated.ply`: Final decimated mesh
+
+### Textured Model (if MVS enabled)
+- `mvs_workspace/sparse_scaled/`: Scaled reconstruction for high-res texturing
+- `mvs_workspace/sparse_scaled/textured_output.obj`: Final textured mesh
+- `mvs_workspace/sparse_scaled/textured_output.mtl`: Material file
+- `mvs_workspace/sparse_scaled/textured_output_texture_*.png`: Texture images
 
 ## Reset Modes
 
@@ -221,9 +238,11 @@ ls configs/stage2/     # See available stage2 configs
 
 After running the pipeline:
 
-1. **For Gaussian Splatting**: Use the output in `sfm_superpoint+lightglue/geofenced/`
-2. **For Dense Reconstruction**: Check `mvs_workspace/scene_dense.ply`
-3. **For Visualization**: Use the original notebook or COLMAP GUI
+1. **For Gaussian Splatting**: Use the geofenced sparse model in `sfm_superpoint+lightglue/geofenced/`
+2. **For Dense Point Cloud**: View `mvs_workspace/scene_dense.ply` in CloudCompare or MeshLab
+3. **For 3D Mesh Viewing**: Open `mvs_workspace/sparse_scaled/textured_output.obj` in Blender, MeshLab, or any 3D viewer
+4. **For Web Viewing**: Convert the textured model to GLTF/GLB format
+5. **For Further Processing**: Use the decimated mesh in `mvs_workspace/meshed_model_decimated.ply`
 
 ## See Also
 
