@@ -487,7 +487,7 @@ def main(config_name="config", overrides=None):
     
     # 2. Extract SuperPoint Features
     feature_conf = extract_features.confs[Config.stage2.extractor]
-    assert feature_conf["preprocessing"]["resize_max"] == fine_max_img_size, f"Need to resize to feature max size constrains {feature_conf['preprocessing']['resize_max']}"  # Ensure extractor config matches our resized image size
+    assert feature_conf["preprocessing"]["resize_max"] == fine_max_img_size, f"Need to resize to feature max size constraints {feature_conf['preprocessing']['resize_max']}"  # Ensure extractor config matches our resized image size
     feature_conf["preprocessing"]["resize_force"] = False  # We already resized the images, no need to force resize again
     feature_path = extract_features.main(
         feature_conf, 
@@ -499,7 +499,7 @@ def main(config_name="config", overrides=None):
 
     # 3. Generate Pairs from Coarse Poses
     pairs_from_poses.main(
-        paths["coarse_sfm"] / "0", 
+        coarse_model_path,  # Use the best model selected earlier
         paths["pairs"], 
         num_matched=Config.stage2.pairs.neighbors_to_match
     )
