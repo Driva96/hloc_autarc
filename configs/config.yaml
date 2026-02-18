@@ -1,0 +1,13 @@
+defaults:
+  - dataset: friedrichs_house
+  - stage1: default
+  - stage2: superpoint_lightglue
+  - geofencing: default
+  - mvs: default
+  - reset: conservative
+  - _self_
+
+output_root: ${dataset.root}/output/hloc/${dataset.experiment}
+
+logging:
+  level: INFO

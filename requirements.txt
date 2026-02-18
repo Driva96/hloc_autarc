@@ -17,3 +17,7 @@ pycolmap-cuda12 #>=3.13.0
 kornia>=0.6.11
 gdown
 lightglue @ git+https://github.com/cvg/LightGlue
+
+# configuration management
+hydra-core>=1.3.0
+omegaconf>=2.3.0

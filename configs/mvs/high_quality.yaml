@@ -1,0 +1,26 @@
+openmvs_bin: "/usr/local/bin/OpenMVS/"
+
+densify:
+  max_resolution: 2400
+  min_resolution: 800
+  sub_resolution_levels: 3
+  postprocess_dmaps: 11  # 2=fill gaps in depth maps, 1=remove speckles, 0=disabled, 11 = fill gaps and remove speckles and adjust confidence (quality choose 10 for faster runtime)
+  fusion_mode: 0  # 0=depth-maps & fusion (default), -1=depth-maps only, -2=fuse disparity-maps
+
+mesh:
+  poisson_depth: 11
+  preclean: true
+  threads: null
+  poisson_pointweight: 4.0 # 4.0 is the default, higher values result in a tighter fit to the points, but can produce more holes and artifacts, lower values produce smoother surfaces but can deviate more from the points (0 disables - original Poisson)
+  target_faces: 2000000
+  max_hole_size: 500000
+  offset_value: 0.001 # how far the generated surface is pushed outward [meters]
+  alpha_value: 0.3
+
+texture:
+  use_highres: true
+  scale: 1.0
+
+postprocess:
+  close_holes: true
+  smooth_iterations: 3

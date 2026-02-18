@@ -1,0 +1,16 @@
+coarse_max_img_size: 640
+coarse_num_features: 1024
+
+gps_priors:
+  std_xy: 2.0
+  std_z: 5.0
+
+matching:
+  strategy: "spatial"
+  exhaustive_threshold: 40
+
+mapper:
+  max_runtime_seconds: 180
+
+camera:
+  mode: "PER_FOLDER"  # PER_FOLDER (single camera, shared intrinsics) or AUTO (multiple cameras/zoom)
