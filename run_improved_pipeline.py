@@ -335,7 +335,8 @@ def main(config_name="config", overrides=None):
             if num_images > max_images:
                 max_images = num_images
                 best_model_idx = int(model_dir.name)
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to load model {model_dir.name}: {e}")
             continue
     
     coarse_model_path = paths["coarse_sfm"] / str(best_model_idx)
