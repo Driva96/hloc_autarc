@@ -714,8 +714,8 @@ def main(config_name="config", overrides=None):
         scale_factor = orig_w / sfm_w
         logger.info(f"Scaling model by factor: {scale_factor}")
 
-        for cam in model.cameras.values():
-            cam = scale_intrinsics(cam, scale_factor)
+        for cam_id, cam in model.cameras.items():
+            model.cameras[cam_id] = scale_intrinsics(cam, scale_factor)
 
         model.write(scaled_model_path)
 
