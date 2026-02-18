@@ -63,7 +63,7 @@ def run_cmd(command, cwd=None, env=None):
     if cwd:
         cwd = str(cwd)
     
-    cmd_str = " ".join(command)
+    cmd_str = " ".join([str(c) for c in command])
     logger.info(f"Running: {cmd_str}")
 
     process = subprocess.Popen(
@@ -181,45 +181,69 @@ def main(config_name="config", overrides=None):
     logger.info("Checking reset flags...")
     logger.info("="*80)
     
-    RESET_STAGE_1 = Config.reset.stage1
-    RESET_STAGE_2 = Config.reset.stage2
-    RESET_MVS = Config.reset.mvs
-    RESET_RESIZED = Config.reset.resized_images
+    # RESET STAGE 1
+    RESET_STAGE_1 = Config.reset.stage_1 
     
-    if RESET_STAGE_1:
-        logger.warning("⚠️  RESET_STAGE_1 is True. Deleting Stage 1 (Coarse) outputs...")
-        if paths["coarse_sfm"].exists():
-            shutil.rmtree(paths["coarse_sfm"])
-            paths["coarse_sfm"].mkdir(parents=True, exist_ok=True)
-        logger.info("✅ Stage 1 reset complete")
+    if Config.reset.all or RESET_STAGE_1:
+        target_dir = paths["coarse_sfm"]
+        
+        # Safety Check: Ensure the target directory is actually inside our defined output folder
+        # This prevents accidental deletion of raw images or root directories.
+        if output_root in target_dir.resolve().parents:
+            if target_dir.exists():
+                logger.warning(f"🧹 RESETTING STAGE 1: Deleting directory {target_dir}...")
+                shutil.rmtree(target_dir)
+                
+                # Re-create the empty directory so the next step doesn't fail
+                target_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("Stage 1 artifacts cleared.")
+            else:
+                logger.info(f"Stage 1 directory ({target_dir}) does not exist. Nothing to clean.")
+        else:
+            logger.error(f"🛑 SAFETY STOP: Attempted to delete {target_dir}, but it is not inside the Experiment Output Root. Deletion cancelled.")
     
-    if RESET_STAGE_2:
-        logger.warning("⚠️  RESET_STAGE_2 is True. Deleting Stage 2 (Fine) outputs...")
-        if paths["fine_sfm"].exists():
-            shutil.rmtree(paths["fine_sfm"])
-            paths["fine_sfm"].mkdir(parents=True, exist_ok=True)
-        if paths["features"].exists():
-            paths["features"].unlink()
-        if paths["matches"].exists():
-            paths["matches"].unlink()
-        if paths["pairs"].exists():
-            paths["pairs"].unlink()
-        logger.info("✅ Stage 2 reset complete")
+    # RESET MASKS
+    RESET_MASKS = Config.reset.masks
     
-    if RESET_MVS:
-        logger.warning("⚠️  RESET_MVS is True. Deleting MVS outputs...")
-        if paths["mvs_root"].exists():
-            shutil.rmtree(paths["mvs_root"])
-            paths["mvs_root"].mkdir(parents=True, exist_ok=True)
-        logger.info("✅ MVS reset complete")
+    if Config.reset.all or RESET_MASKS:
+        # Safety Check:
+        # 1. Ensure the folder name is exactly "masks_geo"
+        # 2. Ensure it is a subdirectory of the dataset root
+        is_safe_name = paths["raw_masks"].name == "masks_geo"
+        is_inside_dataset = dataset_root in paths["raw_masks"].resolve().parents
+        
+        if is_safe_name and is_inside_dataset:
+            if paths["raw_masks"].exists():
+                logger.warning(f"🧹 RESETTING MASKS: Deleting directory {paths['raw_masks']}...")
+                shutil.rmtree(paths["raw_masks"])
+                logger.info("Raw geofencing masks cleared.")
+            else:
+                logger.info(f"Mask directory ({paths['raw_masks']}) does not exist. Nothing to clean.")
+        else:
+            logger.error(f"🛑 SAFETY STOP: Attempted to delete {paths['raw_masks']}. Safety check failed.")
     
-    if RESET_RESIZED:
-        logger.warning("⚠️  RESET_RESIZED is True. Deleting resized images and masks...")
-        if paths["resized_images"].exists():
-            shutil.rmtree(paths["resized_images"])
-        if paths["raw_masks"].exists():
-            shutil.rmtree(paths["raw_masks"])
-        logger.info("✅ Resized images reset complete")
+    # RESET RESIZED IMAGES & MASKS
+    RESET_RESIZED = Config.reset.resized
+    
+    if Config.reset.all or RESET_RESIZED:
+        folders_to_clean = [paths["resized_images"], paths["masks"]]
+        
+        for folder in folders_to_clean:
+            # Safety Check: Ensure we are deleting a 'resized' folder, not the raw data
+            if folder.exists() and "resized" in str(folder):
+                logger.warning(f"🧹 RESETTING RESIZED DATA: Deleting {folder}...")
+                shutil.rmtree(folder)
+                folder.mkdir(parents=True, exist_ok=True) # Recreate empty dir
+            elif not folder.exists():
+                logger.info(f"Directory {folder} does not exist. Skipping.")
+            else:
+                logger.error(f"🛑 SAFETY STOP: Skipped deletion of {folder} because it does not look like a 'resized' directory.")
+        
+        logger.info("Resized images and masks cleared.")
+    
+    # RESET FEATURES & MATCHES
+    RESET_FEATS = Config.reset.features or Config.reset.all
+    RESET_MATCHES = Config.reset.matches or Config.reset.all
     
     # Recreate necessary directories
     paths["resized_images"].mkdir(parents=True, exist_ok=True)
@@ -234,113 +258,115 @@ def main(config_name="config", overrides=None):
     logger.info("="*80)
     
     if not (paths["coarse_sfm"] / "0" / "cameras.bin").exists():
-        logger.info("Starting Coarse Feature Extraction (SIFT)...")
+        logger.info("Starting Coarse Feature Extraction...")
+
+        # Create a list of image names in images (dir) without subdirs
+        images_list = [f.name for f in raw_images_path.iterdir() if f.is_file() and f.suffix.lower() in [".jpg", ".jpeg", ".png"]]
         
-        # Feature extraction configuration for Stage 1 (coarse)
-        coarse_feature_conf = {
-            'model': {'name': 'dog'},
-            'preprocessing': {
-                'grayscale': True,
-                'resize_max': Config.stage1.coarse_max_img_size,
+        # 1. Extract Features (SIFT via COLMAP)
+        pycolmap.extract_features(
+            paths["coarse_db"], 
+            image_path=raw_images_path, 
+            image_names=images_list,
+            camera_model="SIMPLE_RADIAL", 
+            # Create one camera model per folder - in case of one drone with one camera this assumes all images were taken with same camera with same intrinsics (focal length, etc)
+            # Use CameraMode.AUTO if multiple cameras are used
+            camera_mode=getattr(pycolmap.CameraMode, Config.stage1.camera.mode), 
+            extraction_options={
+                "max_image_size": Config.stage1.coarse_max_img_size,
+                "use_gpu": True,
+                "sift": {"max_num_features": Config.stage1.coarse_num_features}
             },
-            'output': 'feats-sift-coarse'
+            device="cuda"
+        )
+
+        # 2. Match (Sequential/Spatial is usually enough for a sequence)
+        logger.info("Starting Coarse Matching...")
+        num_images: int = 0
+        with pycolmap.Database.open(paths["coarse_db"]) as db:
+            num_images = db.num_images()
+
+        # Assign matching options
+        # For using pycolmap matching functions
+        matching_options = {
+            "use_gpu": True,
+            "max_num_matches": 32768,
+            "sift": {
+                "max_ratio": 0.8, 
+                "max_distance": 0.7, 
+                "cross_check": True, 
+                "cpu_brute_force_matcher": False        
+            },
         }
         
-        # Extract features for coarse stage
-        coarse_features = extract_features.main(
-            coarse_feature_conf,
-            raw_images_path,
-            output_root,
-            as_half=True
-        )
-        logger.info(f"✅ Coarse features extracted: {coarse_features}")
-        
-        # Generate pairs for coarse stage
-        logger.info("Generating pairs for coarse reconstruction...")
-        
-        if Config.stage1.use_sequential_matcher:
-            from hloc import pairs_from_exhaustive
-            coarse_pairs = output_root / 'pairs-coarse.txt'
-            pairs_from_exhaustive.main(
-                coarse_features,
-                coarse_pairs,
-                ref_list=None
-            )
+        # Equivalent COLMAP CLI command
+        cmd = [
+            "colmap", "spatial_matcher",
+            "--database_path", str(paths["coarse_db"]),
+            "--FeatureMatching.use_gpu", "1",
+            "--FeatureMatching.gpu_index", "-1",  # Or assign specific GPU
+            "--FeatureMatching.max_num_matches", "32768",  # Increase max matches for better coverage or lower for speed
+            "--SiftMatching.cross_check", "1",
+            "--SiftMatching.cpu_brute_force_matcher", "0",
+        ]
+
+        # Using exhaustive if dataset < threshold images, otherwise spatial
+        if num_images < Config.stage1.matching.exhaustive_threshold:
+            logger.info(f"Using EXHAUSTIVE matching ({num_images} images < {Config.stage1.matching.exhaustive_threshold} threshold)")
+            pycolmap.match_exhaustive(paths["coarse_db"], matching_options=matching_options, device="cuda")
         else:
-            # Use GPS-based pairs if available
-            logger.info("Using GPS-based pair generation...")
-            coarse_gps_data = extract_gps.main(raw_images_path, output_root / "gps_data.csv")
-            
-            coarse_pairs = output_root / 'pairs-coarse-gps.txt'
-            pairs_from_poses.main(
-                coarse_gps_data,
-                coarse_pairs,
-                num_matched=Config.stage1.num_pairs_gps
-            )
-        
-        logger.info(f"✅ Pairs generated: {coarse_pairs}")
-        
-        # Match features for coarse stage
-        logger.info("Matching features for coarse reconstruction...")
-        coarse_match_conf = match_features.confs['NN-mutual']
-        
-        coarse_matches = match_features.main(
-            coarse_match_conf,
-            coarse_pairs,
-            coarse_feature_conf['output'],
-            output_root,
-            matches=output_root / 'matches-coarse.h5'
-        )
-        logger.info(f"✅ Coarse matches: {coarse_matches}")
-        
-        # Run COLMAP reconstruction for Stage 1
-        logger.info("Running COLMAP reconstruction (Stage 1 - Coarse)...")
-        
-        coarse_model = reconstruction.main(
-            paths["coarse_sfm"],
-            raw_images_path,
-            coarse_pairs,
-            coarse_features,
-            coarse_matches,
-            camera_mode=pycolmap.CameraMode.AUTO if Config.stage1.camera_mode == "AUTO" else pycolmap.CameraMode.SINGLE,
-            verbose=True,
-            options={
-                'mapper': {
-                    'ba_refine_focal_length': True,
-                    'ba_refine_principal_point': True,
-                    'ba_refine_extra_params': True,
-                }
-            }
-        )
-        logger.info(f"✅ Coarse reconstruction complete: {coarse_model}")
+            logger.info(f"Using {Config.stage1.matching.strategy.upper()} matching ({num_images} images)")
+            cmd += [
+                "--SpatialMatching.ignore_z", "1",  # Ignore altitude for matching - all images taken from drone at similar altitude
+            ]
+            # pycolmap.match_spatial(paths["coarse_db"], matching_options=matching_options, device="cuda")
+            run_cmd(cmd)
+
+        # 3. Reconstruct (Mapper)
+        logger.info("Starting Coarse Mapping...")
+        # Note: We incorporate GPS priors here to align the world correctly immediately
+        # This saves us from having to manually align the model later.
+        # requires COLMAP CLI because pycolmap mapper bindings are basic
+        cmd = [
+            "colmap", "pose_prior_mapper",
+            "--database_path", str(paths["coarse_db"]),
+            "--image_path", str(raw_images_path),
+            "--output_path", str(paths["coarse_sfm"]),
+            "--Mapper.max_runtime_seconds", str(Config.stage1.mapper.max_runtime_seconds),  # 5 minutes
+            "--prior_position_std_x", str(Config.stage1.gps_priors.std_xy),
+            "--prior_position_std_y", str(Config.stage1.gps_priors.std_xy),
+            "--prior_position_std_z", str(Config.stage1.gps_priors.std_z),
+            "--overwrite_priors_covariance", "1",
+        ]
+        run_cmd(cmd)
     else:
-        logger.info("✅ Coarse reconstruction already exists, skipping Stage 1")
+        logger.info("Coarse model found. Skipping Stage 1.")
     
-    # Select the best/biggest model from Stage 1
-    logger.info("Selecting best model from Stage 1...")
+    # Select biggest model 
+    # scrape all folder with numbers and select the one with most registered images
+    model_dirs = [d for d in (paths["coarse_sfm"]).iterdir() if d.is_dir() and d.name.isdigit()]
+    max_reg_images = 0
+    best_model_dir = None  # Will store Path object
     
-    coarse_models = [p for p in paths["coarse_sfm"].iterdir() if p.is_dir() and p.name.isdigit()]
-    if not coarse_models:
-        raise RuntimeError("No coarse models found! Stage 1 failed.")
-    
-    # Select model with most registered images
-    best_model_idx = 0
-    max_images = 0
-    
-    for model_dir in coarse_models:
+    for d in model_dirs:
         try:
-            rec = pycolmap.Reconstruction(str(model_dir))
-            num_images = rec.num_reg_images()
-            logger.info(f"Model {model_dir.name}: {num_images} registered images")
-            if num_images > max_images:
-                max_images = num_images
-                best_model_idx = int(model_dir.name)
+            model = pycolmap.Reconstruction(d)
+            num_reg_images = len(model.images)
+            logger.info(f"Model {d.name}: {num_reg_images} registered images")
+            if num_reg_images > max_reg_images:
+                max_reg_images = num_reg_images
+                best_model_dir = d
         except Exception as e:
-            logger.warning(f"Failed to load model {model_dir.name}: {e}")
+            logger.warning(f"Failed to load model {d.name}: {e}")
             continue
     
-    coarse_model_path = paths["coarse_sfm"] / str(best_model_idx)
-    logger.info(f"✅ Selected model: {best_model_idx} with {max_images} images")
+    if best_model_dir is None:
+        raise RuntimeError("No valid coarse models found! Stage 1 failed.")
+    
+    logger.info(f"Best Coarse Model found at {best_model_dir} with {max_reg_images} registered images")
+    
+    # Use best_model_dir.name for accessing the model directory
+    coarse_model_path = best_model_dir
     
     # ---------------------------------------------------------------------------
     # 4. GEOFENCING: Generate 3D Bounding Box and 2D Masks
@@ -349,25 +375,46 @@ def main(config_name="config", overrides=None):
     logger.info("STAGE: Geofencing & Masking")
     logger.info("="*80)
     
-    if not list(paths["raw_masks"].glob("*.png")):
-        logger.info("Generating geofencing masks...")
+    # 1. Load Coarse Model
+    # This model was built using the Raw Images, so its cameras have full resolution intrinsics.
+    coarse_model = pycolmap.Reconstruction(paths["coarse_sfm"] / best_model_dir.name)
+
+    # 2. Calculate Adaptive Bounding Box
+    bbox_min, bbox_max = geofencing.compute_adaptive_geofence(
+        coarse_model, 
+        silo_ratio=Config.geofencing.silo_radius_ratio, 
+        height_center_bias=Config.geofencing.height_center_bias, 
+        safety_margin=Config.geofencing.safety_margin 
+    )
+
+    # 3. Create Masks at RAW Resolution
+    # We store these next to the raw images because they match the raw image dimensions.
+    if not paths["raw_masks"].exists():
+        logger.info(f"Generating masks into {paths['raw_masks']}...")
         
-        # Load coarse reconstruction
-        coarse_rec = pycolmap.Reconstruction(str(coarse_model_path))
-        
-        # Generate geofencing masks
-        masking_geo.generate_masks(
-            reconstruction=coarse_rec,
-            image_dir=raw_images_path,
-            output_mask_dir=paths["raw_masks"],
-            silo_ratio=Config.geofencing.silo_ratio,
-            safety_margin_xy=Config.geofencing.safety_margin_xy,
-            safety_margin_z_above=Config.geofencing.safety_margin_z_above,
-            safety_margin_z_below=Config.geofencing.safety_margin_z_below,
+        # We pass the target folder directly. 
+        # HLOC will write {image_name}.png inside this folder.
+        ret = masking_geo.create_mvs_masks(
+            model=coarse_model,
+            output_mask_folder=paths["raw_masks"], 
+            bbox_min=bbox_min,
+            bbox_max=bbox_max,
         )
-        logger.info(f"✅ Masks generated in: {paths['raw_masks']}")
+        
+        # --- HLOC Path Handling Fix ---
+        # Some versions of HLOC's create_mvs_masks might create a subfolder 
+        # named 'masks_geo' *inside* the folder you provided. 
+        # We check for this nesting and fix it if it happens.
+        nested_folder = paths["raw_masks"] / "masks_geo"
+        if nested_folder.exists() and nested_folder.is_dir():
+            logger.info("Detected nested 'masks_geo' folder created by HLOC. Fixing structure...")
+            for file in nested_folder.iterdir():
+                shutil.move(str(file), str(paths["raw_masks"]))
+            nested_folder.rmdir()
+            
+        logger.info("Mask generation complete.")
     else:
-        logger.info("✅ Geofencing masks already exist")
+        logger.info(f"Masks already exist at {paths['raw_masks']}. Skipping generation.")
     
     # ---------------------------------------------------------------------------
     # 5. Resize Images and Masks for Stage 2
@@ -376,63 +423,60 @@ def main(config_name="config", overrides=None):
     logger.info("STAGE: Resize Images & Masks")
     logger.info("="*80)
     
-    if not list(paths["resized_images"].glob("*.jpg")) and not list(paths["resized_images"].glob("*.png")):
-        logger.info(f"Resizing images to max {fine_max_img_size}px...")
+    # 1. Resize Images and Masks for Processing
+    from hloc.extract_features import resize_image
+    
+    def process_resize(src_dir, dst_dir, max_size, interpolation="cv2_area", ext_filter=[".jpg", ".png"]):
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        files = [f for f in src_dir.iterdir() if f.suffix.lower() in ext_filter]
+
+        if not files:
+            logger.warning(f"No files found in {src_dir} with extensions {ext_filter}. Skipping resize.")
+            return 1.0
         
-        image_files = sorted(raw_images_path.glob("*.jpg")) + sorted(raw_images_path.glob("*.png"))
-        
-        for img_path in image_files:
-            if img_path.parent.name == "resized" or img_path.parent.name == "masks_geo":
+        # NOTE: Current implementation assumes all raw images have the SAME dimensions.
+        # The scale is calculated once based on the first image found.
+        # Future improvement: Store scale factors per image (e.g., dict[filename, scale]) 
+        # to support datasets with varying image sizes and allow precise per-image upscaling later.
+        img = read_image(files[0])
+        size = img.shape[:2][::-1]
+        scale = max_size / max(size) if max(size) > max_size else 1.0
+        logger.info(f"Resizing images from {src_dir} to max size {max_size}px with scale factor {scale:.4f}...")
+
+        for f in files:
+            if (dst_dir / f.name).exists(): 
                 continue
             
-            # Load image
-            img = Image.open(img_path)
-            w, h = img.size
-            
-            # Calculate new size
-            scale = min(fine_max_img_size / w, fine_max_img_size / h, 1.0)
-            new_w, new_h = int(w * scale), int(h * scale)
-            
-            # Resize and save
-            if scale < 1.0:
-                img_resized = img.resize((new_w, new_h), Image.LANCZOS)
+            if interpolation == "cv2_nearest":
+                # Special handling for masks (must remain binary 0 or 255)
+                img = read_image(f, grayscale=True)
+                interp = "cv2_nearest"
             else:
-                img_resized = img
+                img = read_image(f)
+                interp = "cv2_area"
+                
+            size = img.shape[:2][::-1]
+            if max(size) > max_size:
+                _scale = max_size / max(size)
+                new_size = tuple(int(round(x * _scale)) for x in size)
+                img = resize_image(img, new_size, interp=interp)
             
-            output_path = paths["resized_images"] / img_path.name
-            img_resized.save(output_path, quality=95)
-        
-        logger.info(f"✅ Resized {len(image_files)} images")
-    else:
-        logger.info("✅ Resized images already exist")
-    
-    # Resize masks
-    if not list(paths["masks"].glob("*.png")):
-        logger.info("Resizing masks...")
-        
-        mask_files = sorted(paths["raw_masks"].glob("*.png"))
-        
-        for mask_path in mask_files:
-            # Load mask
-            mask = Image.open(mask_path)
-            w, h = mask.size
-            
-            # Calculate new size (same scale as images)
-            scale = min(fine_max_img_size / w, fine_max_img_size / h, 1.0)
-            new_w, new_h = int(w * scale), int(h * scale)
-            
-            # Resize and save
-            if scale < 1.0:
-                mask_resized = mask.resize((new_w, new_h), Image.NEAREST)
-            else:
-                mask_resized = mask
-            
-            output_path = paths["masks"] / mask_path.name
-            mask_resized.save(output_path)
-        
-        logger.info(f"✅ Resized {len(mask_files)} masks")
-    else:
-        logger.info("✅ Resized masks already exist")
+            cv2.imwrite(str(dst_dir / f.name), img if len(img.shape) == 2 else img[:, :, ::-1])
+
+        return scale
+
+    logger.info("Resizing Images...")
+    global_scale = process_resize(raw_images_path, paths["resized_images"], fine_max_img_size)
+    logger.info(f"Global Scale Factor applied to images: {global_scale:.4f}")
+
+    logger.info("Resizing Masks...")
+    # Masks usually need nearest neighbor to avoid gray edges
+    process_resize(paths["raw_masks"], paths["masks"], fine_max_img_size, interpolation="cv2_nearest", ext_filter=[".png"])
+
+    # Rename masks for OpenMVS (needs .mask.png extension)
+    for m in paths["masks"].glob("*.png"):
+        if not m.name.endswith(".mask.png"):
+            m.rename(m.with_suffix(".mask.png"))
     
     # ---------------------------------------------------------------------------
     # 6. STAGE 2: Fine Reconstruction (SuperPoint + LightGlue)
@@ -441,64 +485,149 @@ def main(config_name="config", overrides=None):
     logger.info("STAGE 2: Fine Reconstruction")
     logger.info("="*80)
     
-    fine_sfm_geofenced = paths["fine_sfm"] / "geofenced"
+    # 2. Extract SuperPoint Features
+    feature_conf = extract_features.confs[Config.stage2.extractor]
+    assert feature_conf["preprocessing"]["resize_max"] == fine_max_img_size, f"Need to resize to feature max size constrains {feature_conf['preprocessing']['resize_max']}"  # Ensure extractor config matches our resized image size
+    feature_conf["preprocessing"]["resize_force"] = False  # We already resized the images, no need to force resize again
+    feature_path = extract_features.main(
+        feature_conf, 
+        paths["resized_images"], 
+        feature_path=paths["features"],
+        mask_dir=paths["masks"],  # Apply masks during extraction to ignore sky keypoints
+        overwrite=RESET_FEATS
+    )
+
+    # 3. Generate Pairs from Coarse Poses
+    pairs_from_poses.main(
+        paths["coarse_sfm"] / "0", 
+        paths["pairs"], 
+        num_matched=Config.stage2.pairs.neighbors_to_match
+    )
+
+    # 4. Match Features (LightGlue)
+    matcher_conf = match_features.confs["superpoint+lightglue"]
+    match_path = match_features.main(
+        matcher_conf, 
+        paths["pairs"], 
+        features=paths["features"], 
+        matches=paths["matches"],
+        overwrite=RESET_MATCHES
+    )
     
-    if not (fine_sfm_geofenced / "0" / "cameras.bin").exists():
-        logger.info("Starting Fine Feature Extraction...")
+    # -----------------------------------------------------------------------------
+    # [OPTIONAL] RESET STAGE 2
+    # Set this to True if you want to completely erase the Fine Reconstruction
+    # and start the Scout step from scratch.
+    # -----------------------------------------------------------------------------
+    RESET_STAGE_2 = Config.reset.stage_2
+
+    if Config.reset.all or RESET_STAGE_2:
+        target_dir = paths["fine_sfm"]
         
-        # Extract features for Stage 2 (fine)
-        fine_feature_conf = extract_features.confs[Config.stage2.extractor].copy()
+        # Safety Check: Ensure the target directory is actually inside our defined output folder
+        # This prevents accidental deletion of raw images or root directories.
+        if output_root in target_dir.resolve().parents:
+            if target_dir.exists():
+                logger.warning(f"🧹 RESETTING STAGE 2: Deleting directory {target_dir}...")
+                shutil.rmtree(target_dir)
+                
+                # Re-create the empty directory so the next step doesn't fail
+                target_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("Stage 2 artifacts cleared.")
+            else:
+                logger.info(f"Stage 2 directory ({target_dir}) does not exist. Nothing to clean.")
+        else:
+            logger.error(f"🛑 SAFETY STOP: Attempted to delete {target_dir}, but it is not inside the Experiment Output Root. Deletion cancelled.")
+    
+    # 5. Sparse Reconstruction
+    if not (paths["fine_sfm"] / "0" / "cameras.bin").exists():
+        # Initialize new DB
+        if paths["fine_db"].exists(): 
+            paths["fine_db"].unlink()
+        reconstruction.create_empty_db(paths["fine_db"])
         
-        fine_features = extract_features.main(
-            fine_feature_conf,
-            paths["resized_images"],
-            output_root,
-            feature_path=paths["features"]
+        # Import Images
+        # We point to the resized images + the masks
+        reconstruction.import_images(
+            paths["resized_images"], 
+            paths["fine_db"], 
+            getattr(pycolmap.CameraMode, Config.stage1.camera.mode), 
+            image_list=images_list,
+            options=pycolmap.ImageReaderOptions({"mask_path": paths["masks"], "camera_model": "RADIAL"})
         )
-        logger.info(f"✅ Fine features extracted: {fine_features}")
         
-        # Generate pairs for fine stage using coarse poses
-        logger.info("Generating pairs from coarse poses...")
+        # Import Features/Matches
+        image_ids = reconstruction.get_image_ids(paths["fine_db"])
+        with pycolmap.Database.open(paths["fine_db"]) as db:
+            logger.info(f"Number of images in Fine DB: {db.num_images()}")
+            triangulation.import_features(image_ids, db, paths["features"])
+            triangulation.import_matches(image_ids, db, paths["pairs"], paths["matches"], skip_geometric_verification=False)
         
-        fine_pairs = pairs_from_poses.main(
-            coarse_model_path,
-            paths["pairs"],
-            num_matched=Config.stage2.num_pairs_from_poses
-        )
-        logger.info(f"✅ Pairs generated: {fine_pairs}")
+            # Triangulate / Verify
+            triangulation.estimation_and_geometric_verification(paths["fine_db"], paths["pairs"])
         
-        # Match features for fine stage
-        logger.info("Matching features for fine reconstruction...")
+        # Re-inject GPS Priors (using original image metadata)
+        extract_gps.populate_priors(paths["fine_db"], raw_images_path)
         
-        fine_match_conf = match_features.confs[Config.stage2.matcher].copy()
-        
-        fine_matches = match_features.main(
-            fine_match_conf,
-            fine_pairs,
-            fine_feature_conf['output'],
-            output_root,
-            matches=paths["matches"]
-        )
-        logger.info(f"✅ Fine matches: {fine_matches}")
-        
-        # Run triangulation for Stage 2 (reuse poses from Stage 1, refine with new features)
-        logger.info("Running triangulation (Stage 2 - Fine)...")
-        
-        triangulation.main(
-            fine_sfm_geofenced,
-            coarse_model_path,
-            paths["resized_images"],
-            fine_pairs,
-            fine_features,
-            fine_matches,
-            verbose=True
-        )
-        logger.info(f"✅ Fine reconstruction complete: {fine_sfm_geofenced}")
+        # Run Mapper with Priors
+        logger.info("Running Fine Mapper...")
+        cmd = [
+            "colmap", "pose_prior_mapper",
+            "--database_path", str(paths["fine_db"]),
+            "--image_path", str(paths["resized_images"]),
+            "--output_path", str(paths["fine_sfm"]),
+            "--Mapper.max_runtime_seconds", str(Config.stage2.mapper.max_runtime_seconds),  # 15 minutes
+            "--prior_position_std_x", str(Config.stage1.gps_priors.std_xy),
+            "--prior_position_std_y", str(Config.stage1.gps_priors.std_xy),
+            "--prior_position_std_z", str(Config.stage1.gps_priors.std_z),
+            "--overwrite_priors_covariance", "1"
+        ]
+        run_cmd(cmd)
     else:
-        logger.info("✅ Fine reconstruction already exists, skipping Stage 2")
+        logger.info("Fine model found. Skipping Stage 2.")
+    
+    # Select biggest model 
+    # scrape all folder with numbers and select the one with most registered images
+    model_dirs = [d for d in (paths["fine_sfm"]).iterdir() if d.is_dir() and d.name.isdigit()]
+    max_reg_images = 0
+    best_model_dir = None
+
+    for d in model_dirs:
+        model = pycolmap.Reconstruction(d)
+        num_reg_images = len(model.images)
+        if num_reg_images > max_reg_images:
+            max_reg_images = num_reg_images
+            best_model_dir = d
+
+    logger.info(f"Best Fine Model found at {best_model_dir} with {max_reg_images} registered images.")
+    final_model = pycolmap.Reconstruction(best_model_dir)
     
     # ---------------------------------------------------------------------------
-    # 7. DENSE RECONSTRUCTION: OpenMVS
+    # 7. RESET MVS WORKSPACE
+    # ---------------------------------------------------------------------------
+    RESET_MVS = Config.reset.mvs
+
+    if Config.reset.all or RESET_MVS:
+        target_dir = paths["mvs_root"]
+        has_mvs_name = "mvs" in target_dir.name.lower()
+        
+        # Safety Check: Ensure the target directory is actually inside our defined output folder
+        # This prevents accidental deletion of raw images or root directories.
+        if output_root in target_dir.resolve().parents and has_mvs_name:
+            if target_dir.exists():
+                logger.warning(f"🧹 RESETTING MVS WORKSPACE: Deleting directory {target_dir}...")
+                shutil.rmtree(target_dir)
+                
+                # Re-create the empty directory so the next step doesn't fail
+                target_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("MVS workspace cleared.")
+            else:
+                logger.info(f"MVS workspace directory ({target_dir}) does not exist. Nothing to clean.")
+        else:
+            logger.error(f"🛑 SAFETY STOP: Attempted to delete {target_dir}, but it is not inside the Experiment Output Root. Deletion cancelled.")
+    
+    # ---------------------------------------------------------------------------
+    # 8. DENSE RECONSTRUCTION: OpenMVS
     # ---------------------------------------------------------------------------
     logger.info("\n" + "="*80)
     logger.info("STAGE: Dense Reconstruction (OpenMVS)")
@@ -517,14 +646,14 @@ def main(config_name="config", overrides=None):
         undistorted_dir.mkdir(parents=True, exist_ok=True)
         
         # Use pycolmap to undistort
-        rec = pycolmap.Reconstruction(str(fine_sfm_geofenced / "0"))
+        rec = pycolmap.Reconstruction(str(best_model_dir / "0"))
         
         # Export to OpenMVS format
         logger.info("Exporting to OpenMVS...")
         
         run_cmd([
             "colmap", "model_converter",
-            "--input_path", str(fine_sfm_geofenced / "0"),
+            "--input_path", str(best_model_dir / "0"),
             "--output_path", str(paths["mvs_root"] / "sparse.ply"),
             "--output_type", "PLY"
         ])
@@ -556,7 +685,7 @@ def main(config_name="config", overrides=None):
     logger.info("PIPELINE COMPLETE")
     logger.info("="*80)
     logger.info(f"✅ Coarse Model: {coarse_model_path}")
-    logger.info(f"✅ Fine Model: {fine_sfm_geofenced}")
+    logger.info(f"✅ Fine Model: {best_model_dir}")
     logger.info(f"✅ Output Root: {output_root}")
     
     if dense_ply.exists():
