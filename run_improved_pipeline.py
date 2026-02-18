@@ -81,11 +81,43 @@ def run_cmd(command, cwd=None, env=None):
 
     process.wait()
     if process.returncode != 0:
-        logger.error(f"Command failed with return code {process.returncode}")
-        raise RuntimeError(f"Command failed: {cmd_str}")
+        raise RuntimeError(f"Command failed with code {process.returncode}: {cmd_str}")
     
     logger.info(f"✅ Command completed successfully")
     return process.returncode
+
+
+class OpenMVSEnv:
+    """Context manager to temporarily add OpenMVS to PATH."""
+    def __init__(self, openmvs_bin_path):
+        self.openmvs_bin_path = openmvs_bin_path
+    
+    def __enter__(self):
+        self.old_env = os.environ.copy()
+        os.environ["PATH"] = f"{self.openmvs_bin_path}:{os.environ['PATH']}"
+        return os.environ
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        os.environ.clear()
+        os.environ.update(self.old_env)
+
+
+def scale_intrinsics(camera, scale):
+    """Scales COLMAP camera intrinsics."""
+    camera.width = int(camera.width * scale)
+    camera.height = int(camera.height * scale)
+    
+    # Focal length indices vary by model, but usually 0 or 0 and 1
+    if camera.model.name in ["SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"]:
+        camera.params[0] *= scale  # f
+        camera.params[1] *= scale  # cx
+        camera.params[2] *= scale  # cy
+    elif camera.model.name in ["PINHOLE", "OPENCV", "FULL_OPENCV"] or camera.focal_length_idxs == 2:
+        camera.params[0] *= scale  # fx
+        camera.params[1] *= scale  # fy
+        camera.params[2] *= scale  # cx
+        camera.params[3] *= scale  # cy
+    return camera
 
 
 def main(config_name="config", overrides=None):
@@ -602,6 +634,19 @@ def main(config_name="config", overrides=None):
     logger.info(f"Best Fine Model found at {best_model_dir} with {max_reg_images} registered images.")
     final_model = pycolmap.Reconstruction(best_model_dir)
     
+    # 6. Final Clean: Geometric Crop of Sparse Model
+    # This ensures the sparse model used for Gaussian Splatting doesn't have floaters
+    geofenced_path = paths["fine_sfm"] / "geofenced"
+    geofenced_path.mkdir(exist_ok=True)
+
+    cropped_model_geofence_specs = geofencing.pca_cylinder_geofence(
+        final_model,
+        output_model_path=geofenced_path,
+        buffer_dist=Config.geofencing.buffer_distance,
+        geofence_mode="circle"
+    )
+    logger.info(f"Final Sparse Model ready at: {geofenced_path}")
+    
     # ---------------------------------------------------------------------------
     # 7. RESET MVS WORKSPACE
     # ---------------------------------------------------------------------------
@@ -627,74 +672,358 @@ def main(config_name="config", overrides=None):
             logger.error(f"🛑 SAFETY STOP: Attempted to delete {target_dir}, but it is not inside the Experiment Output Root. Deletion cancelled.")
     
     # ---------------------------------------------------------------------------
-    # 8. DENSE RECONSTRUCTION: OpenMVS
+    # 8. DENSE RECONSTRUCTION, MESHING, AND TEXTURING: OpenMVS + PyMeshLab
     # ---------------------------------------------------------------------------
     logger.info("\n" + "="*80)
-    logger.info("STAGE: Dense Reconstruction (OpenMVS)")
+    logger.info("STAGE: Dense Reconstruction, Meshing, and Texturing")
     logger.info("="*80)
     
-    mvs_scene = paths["mvs_root"] / "scene.mvs"
-    dense_ply = paths["mvs_root"] / "scene_dense.ply"
-    
-    if not dense_ply.exists() and Config.mvs.enabled:
-        logger.info("Converting to OpenMVS format...")
+    if Config.mvs.enabled:
+        # 1. Undistort Images (Prepare for MVS)
+        # OpenMVS expects undistorted pinhole images.
+        undistorted_path = paths["mvs_root"] / "images"
         
-        # Undistort images for OpenMVS
-        logger.info("Undistorting images...")
-        
-        undistorted_dir = paths["mvs_root"] / "undistorted"
-        undistorted_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Use pycolmap to undistort
-        rec = pycolmap.Reconstruction(str(best_model_dir))
-        
-        # Export to OpenMVS format
-        logger.info("Exporting to OpenMVS...")
-        
-        run_cmd([
-            "colmap", "model_converter",
-            "--input_path", str(best_model_dir),
-            "--output_path", str(paths["mvs_root"] / "sparse.ply"),
-            "--output_type", "PLY"
-        ])
-        
-        # Run OpenMVS densification
-        if shutil.which("DensifyPointCloud"):
-            logger.info("Running OpenMVS DensifyPointCloud...")
-            
-            run_cmd([
-                "DensifyPointCloud",
-                str(mvs_scene),
-                "-w", str(paths["mvs_root"]),
-                "--resolution-level", str(Config.mvs.resolution_level),
-                "--number-views", str(Config.mvs.number_views)
-            ])
-            
-            logger.info(f"✅ Dense point cloud created: {dense_ply}")
+        if not undistorted_path.exists() or not list(undistorted_path.glob("*.jpg")):
+            logger.info("Undistorting images for MVS...")
+            pycolmap.undistort_images(
+                paths["mvs_root"], 
+                geofenced_path, 
+                paths["resized_images"], 
+                output_type="COLMAP"
+            )
+            logger.info(f"✅ Undistorted images saved to {undistorted_path}")
         else:
-            logger.warning("⚠️  OpenMVS tools not found. Skipping dense reconstruction.")
-    elif dense_ply.exists():
-        logger.info("✅ Dense reconstruction already exists")
+            logger.info("Undistorted images already exist")
+        
+        # 2. Prepare High-Res Texture Project (Optional but recommended)
+        # We create a second .mvs file that uses the original high-res images, 
+        # but shares the geometry from the low-res processing.
+        logger.info("Creating Scaled Reconstruction for Texturing...")
+        scaled_model_path = paths["mvs_root"] / "sparse_scaled"
+        scaled_model_path.mkdir(exist_ok=True)
+
+        model = pycolmap.Reconstruction(paths["mvs_root"] / "sparse")
+        # Calculate scale factor relative to the images used in Stage 2
+        # If we used 1600px for SfM, and originals are 4000px, scale is ~2.5
+        # Here we want to go back to ORIGINALS.
+
+        img_name = list(model.images.values())[0].name
+        orig_w, orig_h = Image.open(raw_images_path / img_name).size
+        sfm_w = list(model.cameras.values())[0].width
+
+        scale_factor = orig_w / sfm_w
+        logger.info(f"Scaling model by factor: {scale_factor}")
+
+        for cam in model.cameras.values():
+            cam = scale_intrinsics(cam, scale_factor)
+
+        model.write(scaled_model_path)
+
+        # Undistort Original High-Res Images
+        if not (scaled_model_path / "images").exists() or not list((scaled_model_path / "images").glob("*.jpg")):
+            logger.info("Undistorting high-res images...")
+            pycolmap.undistort_images(
+                scaled_model_path, 
+                scaled_model_path, 
+                raw_images_path, 
+                output_type="COLMAP"
+            )
+            logger.info("✅ High-res images undistorted")
+        else:
+            logger.info("High-res undistorted images already exist")
+        
+        # 3. OpenMVS Pipeline
+        dense_ply = paths["mvs_root"] / "scene_dense.ply"
+        
+        if not dense_ply.exists():
+            with OpenMVSEnv(Config.mvs.openmvs_bin) as env:
+                # A. Convert COLMAP -> MVS
+                logger.info("Converting COLMAP to OpenMVS format...")
+                run_cmd([
+                    "InterfaceCOLMAP",
+                    "-i", ".",
+                    "-o", "scene.mvs",
+                    "--image-folder", str(paths["mvs_root"] / "images"),
+                    "--archive-type", "1",
+                    "--common-intrinsics", "1",
+                ], cwd=paths["mvs_root"], env=env)
+
+                # B. Densify
+                logger.info("Running DensifyPointCloud...")
+                run_cmd([
+                    "DensifyPointCloud",
+                    "-i", "scene.mvs",
+                    "-o", "scene_dense.mvs",
+                    "--max-resolution", str(Config.mvs.densify.max_resolution),
+                    "--min-resolution", str(Config.mvs.densify.min_resolution),
+                    "--sub-resolution-levels", str(Config.mvs.densify.sub_resolution_levels),
+                    "--postprocess-dmaps", str(Config.mvs.densify.postprocess_dmaps),
+                    "--fusion-mode", str(Config.mvs.densify.fusion_mode),
+                    "--mask-path", str(paths["masks"])
+                ], cwd=paths["mvs_root"], env=env)
+                
+                logger.info(f"✅ Dense point cloud created: {dense_ply}")
+        else:
+            logger.info("Dense point cloud already exists")
+        
+        # 4. Meshing with PyMeshLab
+        mesh_uncropped = paths["mvs_root"] / "scene_mesh_uncropped.ply"
+        
+        if not mesh_uncropped.exists():
+            logger.info("Running Poisson Surface Reconstruction with PyMeshLab...")
+            import pymeshlab
+            
+            num_threads = os.cpu_count() if os.cpu_count() is not None else 8
+            ms = pymeshlab.MeshSet()
+            ms.load_new_mesh(str((paths["mvs_root"] / "scene_dense.ply").resolve()))
+
+            logger.info("Running Poisson Surface Reconstruction...")
+            ms.generate_surface_reconstruction_screened_poisson(
+                depth=Config.mvs.mesh.poisson_depth, 
+                preclean=True, 
+                confidence=False, 
+                pointweight=Config.mvs.mesh.poisson_pointweight,
+                threads=num_threads
+            )
+            
+            ms.save_current_mesh(str(mesh_uncropped.resolve()))
+            logger.info(f"✅ Uncropped mesh saved: {mesh_uncropped}")
+        else:
+            logger.info("Uncropped mesh already exists")
+        
+        # 5. Crop Mesh to Bounding Box
+        mesh_poisson = paths["mvs_root"] / "mesh_poisson.ply"
+        
+        if not mesh_poisson.exists():
+            logger.info("Cropping Mesh to Geofence...")
+            import pymeshlab
+            
+            ms = pymeshlab.MeshSet()
+            ms.load_new_mesh(str(mesh_uncropped.resolve()))
+            
+            c_center = cropped_model_geofence_specs["center"]
+            c_axis = cropped_model_geofence_specs["normal"]
+            c_radius = cropped_model_geofence_specs["radius"]
+
+            # Normalize axis to be safe (crucial for the math to work)
+            c_axis = c_axis / np.linalg.norm(c_axis)
+
+            # Generate MeshLab condition string for cylindrical cropping
+            # We need to select vertices where the distance to the axis line is > radius.
+            vx = f"(x - {c_center[0]})"
+            vy = f"(y - {c_center[1]})"
+            vz = f"(z - {c_center[2]})"
+
+            dot = f"({vx} * {c_axis[0]} + {vy} * {c_axis[1]} + {vz} * {c_axis[2]})"
+
+            perp_x = f"({vx} - {dot} * {c_axis[0]})"
+            perp_y = f"({vy} - {dot} * {c_axis[1]})"
+            perp_z = f"({vz} - {dot} * {c_axis[2]})"
+
+            cyl_condition = f"({perp_x}*{perp_x} + {perp_y}*{perp_y} + {perp_z}*{perp_z}) > {c_radius**2}"
+
+            logger.info("Cutting Mesh with Cylinder...")
+            ms.compute_selection_by_condition_per_vertex(condselect=cyl_condition)
+            ms.meshing_remove_selected_vertices()
+
+            logger.info("Removing the 'Skirt' (Stretched Edges)...")
+            ms.compute_selection_by_edge_length(threshold=1.5) 
+            ms.meshing_remove_selected_faces()
+
+            logger.info("Cleaning up floating bits...")
+            ms.meshing_remove_connected_component_by_diameter(mincomponentdiag=pymeshlab.PureValue(2.0))
+            ms.meshing_remove_unreferenced_vertices()
+
+            logger.info("Closing Holes...")
+            ms.meshing_close_holes(maxholesize=Config.mvs.mesh.max_hole_size)
+
+            logger.info("Simplifying Mesh...")
+            logger.info(f"Number of faces before simplification: {ms.current_mesh().face_number()}, target: 400,000")
+            ms.meshing_decimation_quadric_edge_collapse(
+                targetfacenum=400000,
+                preserveboundary=True, 
+                preservenormal=True
+            )
+
+            logger.info(f"Saving to {mesh_poisson}...")
+            ms.save_current_mesh(str(mesh_poisson.resolve()))
+            ms.save_current_mesh(str((paths["mvs_root"] / "mesh_poisson_before_refine.ply").resolve()))
+            logger.info(f"✅ Cropped and cleaned mesh saved: {mesh_poisson}")
+        else:
+            logger.info("Cropped mesh already exists")
+        
+        # 6. Refine Mesh with OpenMVS
+        mesh_refined = paths["mvs_root"] / "scene_mesh_refined.ply"
+        
+        if not mesh_refined.exists():
+            with OpenMVSEnv(Config.mvs.openmvs_bin) as env:
+                logger.info("Refining mesh with OpenMVS...")
+                run_cmd([
+                    "RefineMesh",
+                    "scene_dense.mvs",
+                    "-m", "mesh_poisson.ply",
+                    "-o", "scene_mesh_refined.mvs",
+                    "--scales", "2",
+                    "--max-face-area", "64",
+                    "--min-resolution", str(fine_max_img_size // 4),
+                    "--reduce-memory", "0",
+                    "--planar-vertex-ratio", "0.5",
+                    "--regularity-weight", "0.5",
+                    "--decimate", "1.0",
+                    "--cuda-device", "-1"
+                ], cwd=paths["mvs_root"], env=env)
+                logger.info(f"✅ Refined mesh saved: {mesh_refined}")
+        else:
+            logger.info("Refined mesh already exists")
+        
+        # 7. Decimate mesh to target face count
+        mesh_decimated = paths["mvs_root"] / "meshed_model_decimated.ply"
+        
+        if not mesh_decimated.exists():
+            logger.info("Decimating mesh to target face count...")
+            import pymeshlab
+            
+            ms = pymeshlab.MeshSet()
+            ms.load_new_mesh(str(mesh_refined.resolve()))
+
+            logger.info(f"Number of faces before simplification: {ms.current_mesh().face_number()}, target: {Config.mvs.mesh.target_faces}")
+            ms.meshing_decimation_quadric_edge_collapse(
+                targetfacenum=Config.mvs.mesh.target_faces, 
+                preserveboundary=True, 
+                preservenormal=True
+            )
+
+            ms.save_current_mesh(str(mesh_decimated.resolve()))
+            logger.info(f"✅ Decimated mesh saved: {mesh_decimated}")
+        else:
+            logger.info("Decimated mesh already exists")
+        
+        # 8. Export to VisualSFM NVM Format for Texturing
+        nvm_file = scaled_model_path / "sfm_model.nvm"
+        
+        if not nvm_file.exists():
+            with OpenMVSEnv(Config.mvs.openmvs_bin) as my_env:
+                logger.info("Exporting to NVM format...")
+                run_cmd([
+                    "colmap", "model_converter",
+                    "--input_path", str(scaled_model_path),
+                    "--output_path", str(nvm_file),
+                    "--output_type", "NVM"
+                ], cwd=str(scaled_model_path), env=my_env)
+                logger.info(f"✅ NVM file created: {nvm_file}")
+        else:
+            logger.info("NVM file already exists")
+        
+        # 9. Fix NVM Paths
+        nvm_fixed = scaled_model_path / "sfm_model_fixed.nvm"
+        
+        if not nvm_fixed.exists():
+            logger.info("Fixing NVM file paths for MVS Texturing...")
+            
+            image_subdir = "images"
+            
+            with open(nvm_file, 'r') as f:
+                lines = f.readlines()
+
+            if len(lines) < 3:
+                raise ValueError("NVM file is too short or corrupted.")
+
+            try:
+                num_cams = int(lines[2].strip())
+            except ValueError:
+                raise ValueError("Could not parse number of cameras from NVM file.")
+
+            logger.info(f"Found {num_cams} cameras. Updating file paths...")
+
+            new_lines = [lines[0], lines[1], lines[2]]
+
+            for i in range(3, 3 + num_cams):
+                parts = lines[i].split()
+                original_filename = parts[0]
+                
+                clean_name = Path(original_filename).name 
+                new_filename = f"{image_subdir}/{clean_name}"
+                
+                parts[0] = new_filename
+                new_line = " ".join(parts) + "\n"
+                new_lines.append(new_line)
+
+            new_lines.extend(lines[3 + num_cams:])
+
+            with open(nvm_fixed, 'w') as f:
+                f.writelines(new_lines)
+
+            logger.info(f"✅ Successfully updated {nvm_fixed}")
+        else:
+            logger.info("Fixed NVM file already exists")
+        
+        # 10. Reset Final Outputs Check
+        RESET_FINAL = Config.reset.mvs
+
+        if Config.reset.all or RESET_FINAL:
+            target_files = list(scaled_model_path.glob("textured_output*"))
+            for f in target_files:
+                if f.is_file():
+                    logger.warning(f"🧹 RESETTING FINAL OUTPUT: Deleting file {f}...")
+                    f.unlink()
+            logger.info("Final outputs cleared.")
+        
+        # 11. Texture Dense Scene
+        textured_output = scaled_model_path / "textured_output.obj"
+        
+        if not textured_output.exists():
+            logger.info("Texturing with texrecon...")
+            
+            # Copy mesh to scaled model path
+            shutil.copyfile(mesh_decimated, scaled_model_path / "meshed_model_decimated.ply")
+
+            command = [
+                "texrecon",  
+                "sfm_model_fixed.nvm",
+                "meshed_model_decimated.ply",
+                "textured_output",
+                "--outlier_removal=gauss_clamping"
+            ]
+
+            with OpenMVSEnv(Config.mvs.openmvs_bin) as my_env:    
+                run_cmd(command, cwd=str(scaled_model_path), env=my_env)
+            
+            logger.info(f"✅ Textured model created: {textured_output}")
+        else:
+            logger.info("Textured model already exists")
     else:
-        logger.info("⚠️  MVS disabled in config, skipping dense reconstruction")
+        logger.info("⚠️  MVS disabled in config, skipping dense reconstruction, meshing, and texturing")
     
     # ---------------------------------------------------------------------------
-    # 8. FINAL OUTPUT
+    # 9. FINAL OUTPUT
     # ---------------------------------------------------------------------------
     logger.info("\n" + "="*80)
     logger.info("PIPELINE COMPLETE")
     logger.info("="*80)
     logger.info(f"✅ Coarse Model: {coarse_model_path}")
     logger.info(f"✅ Fine Model: {best_model_dir}")
+    logger.info(f"✅ Geofenced Model: {geofenced_path}")
     logger.info(f"✅ Output Root: {output_root}")
     
-    if dense_ply.exists():
-        logger.info(f"✅ Dense Point Cloud: {dense_ply}")
+    if Config.mvs.enabled:
+        dense_ply = paths["mvs_root"] / "scene_dense.ply"
+        mesh_refined = paths["mvs_root"] / "scene_mesh_refined.ply"
+        mesh_decimated = paths["mvs_root"] / "meshed_model_decimated.ply"
+        textured_output = scaled_model_path / "textured_output.obj"
+        
+        if dense_ply.exists():
+            logger.info(f"✅ Dense Point Cloud: {dense_ply}")
+        if mesh_refined.exists():
+            logger.info(f"✅ Refined Mesh: {mesh_refined}")
+        if mesh_decimated.exists():
+            logger.info(f"✅ Decimated Mesh: {mesh_decimated}")
+        if textured_output.exists():
+            logger.info(f"✅ Textured Model: {textured_output}")
     
     logger.info("\n" + "="*80)
     logger.info("Next steps:")
-    logger.info("  - Fine model is ready for Gaussian Splatting training")
-    logger.info("  - Dense point cloud can be used for mesh generation")
+    logger.info("  - Geofenced model is ready for Gaussian Splatting training")
+    logger.info("  - Textured model can be viewed in 3D viewers")
     logger.info("="*80)
     
     return output_root
