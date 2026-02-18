@@ -106,6 +106,7 @@ def visualize_loc_from_log(
     db_image_dir=None,
     top_k_db=2,
     dpi=75,
+    target_db_name=None
 ):
     q_image = read_image(image_dir / query_name)
     if loc.get("covisibility_clustering", False):
@@ -137,16 +138,43 @@ def visualize_loc_from_log(
         assert "indices_db" in loc
         counts = np.array([np.sum(loc["indices_db"][inliers] == i) for i in range(n)])
 
+    if target_db_name is not None:
+        # Find the index of the requested image in the db list
+        selection = []
+        for idx, db_val in enumerate(loc["db"]):
+            # If we have a reconstruction, db_val is an ID, resolve to name
+            if reconstruction is not None:
+                curr_name = reconstruction.images[db_val].name
+            else:
+                curr_name = db_val
+            
+            if curr_name == target_db_name:
+                selection = [idx]
+                break
+        
+        if not selection:
+            print(f"Target image '{target_db_name}' not found in localization candidates.")
+            return
+    else:
+        # Original logic: display the database images with the most inlier matches
+        db_sort = np.argsort(-counts)
+        selection = db_sort[:top_k_db]
+
     # display the database images with the most inlier matches
-    db_sort = np.argsort(-counts)
-    for db_idx in db_sort[:top_k_db]:
+    for db_idx in selection:
         if reconstruction is not None:
             db = reconstruction.images[loc["db"][db_idx]]
             db_name = db.name
             db_kp_q_db = np.array(dbs_kp_q_db[db_idx])
-            kp_q = mkp_q[db_kp_q_db[:, 0]]
-            kp_db = np.array([db.points2D[i].xy for i in db_kp_q_db[:, 1]])
-            inliers_db = inliers_dbs[db_idx]
+
+            if len(db_kp_q_db) == 0:
+                kp_q = np.zeros((0, 2))
+                kp_db = np.zeros((0, 2))
+                inliers_db = []
+            else:
+                kp_q = mkp_q[db_kp_q_db[:, 0]]
+                kp_db = np.array([db.points2D[i].xy for i in db_kp_q_db[:, 1]])
+                inliers_db = inliers_dbs[db_idx]
         else:
             db_name = loc["db"][db_idx]
             kp_q = mkp_q[loc["indices_db"] == db_idx]
@@ -154,8 +182,12 @@ def visualize_loc_from_log(
             inliers_db = inliers[loc["indices_db"] == db_idx]
 
         db_image = read_image((db_image_dir or image_dir) / db_name)
-        color = cm_RdGn(inliers_db).tolist()
-        text = f"inliers: {sum(inliers_db)}/{len(inliers_db)}; db_image: {db_name}"
+        if len(inliers_db) > 0:
+            color = cm_RdGn(inliers_db).tolist()
+            text = f"inliers: {sum(inliers_db)}/{len(inliers_db)}; db_image: {db_name}"
+        else:
+            color = []
+            text = f"inliers: 0/0; db_image: {db_name}"
 
         plot_images([q_image, db_image], dpi=dpi)
         plot_matches(kp_q, kp_db, color, a=0.1)
