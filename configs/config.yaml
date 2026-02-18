@@ -11,3 +11,6 @@ output_root: ${dataset.root}/output/hloc/${dataset.experiment}
 
 logging:
   level: INFO
+
+mvs:
+  enabled: true
