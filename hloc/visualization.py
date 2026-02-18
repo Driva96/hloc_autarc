@@ -155,7 +155,7 @@ def visualize_loc_from_log(
 
         db_image = read_image((db_image_dir or image_dir) / db_name)
         color = cm_RdGn(inliers_db).tolist()
-        text = f"inliers: {sum(inliers_db)}/{len(inliers_db)}"
+        text = f"inliers: {sum(inliers_db)}/{len(inliers_db)}; db_image: {db_name}"
 
         plot_images([q_image, db_image], dpi=dpi)
         plot_matches(kp_q, kp_db, color, a=0.1)
