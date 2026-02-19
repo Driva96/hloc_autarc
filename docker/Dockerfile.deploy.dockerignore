@@ -1,0 +1,38 @@
+.git
+__pycache__
+*.pyc
+.ipynb_checkpoints
+.vscode
+.devcontainer
+dist
+build
+eigen_build
+cgal_build
+openMVS_build
+colmap
+cgal
+*.egg-info
+*.egg
+
+# local data folders:
+data/
+datasets/
+outputs/
+doc/
+images/
+
+# Select third party submodules of relevance, exclude others 
+third_party/d2net/
+third_party/deep-image-retrieval/
+third_part/r2d2/
+
+# ignore example pipelines and notebooks
+*.ipynb
+.ipynb_checkpoints
+examples/
+
+# Ignore build artifacts/env settings
+.env
+__pycache__
+*.pyc
+

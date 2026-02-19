@@ -2,10 +2,10 @@ services:
   hloc:
     build:
       context: ..
-      dockerfile: .devcontainer/Dockerfile
-    image: hloc:dev
+      dockerfile: docker/Dockerfile.deploy #.devcontainer/Dockerfile
+    image: hloc_deploy:latest
     shm_size: '24gb'  # Increase this value as needed
-    container_name: hloc-dev
+    container_name: hloc_deploy
     volumes:
       - ..:/hloc
       - /data/autarc:/data:cached

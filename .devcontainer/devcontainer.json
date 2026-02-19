@@ -1,5 +1,5 @@
 {
-  "name": "hloc-dev",
+  "name": "hloc_deploy",
   "dockerComposeFile": ["./docker-compose.yml"],
   "service": "hloc",
   "workspaceFolder": "/hloc",

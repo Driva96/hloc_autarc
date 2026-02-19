@@ -59,7 +59,7 @@ RUN git clone https://github.com/colmap/colmap.git && \
 # 4. Build PyCOLMAP Wheel
 RUN python -m pip install build setuptools wheel tomlkit
 RUN cd colmap && \
-    python python/ci/update_pyproject_toml.py --name "pycolmap-cuda12" --add-deps "nvidia-cuda-runtime-cu12==12.9.1" "nvidia-curand-cu12==10.3.10.19" && \
+    python python/ci/update_pyproject_toml.py --name "pycolmap-cuda12" && \
     CMAKE_ARGS="-Dcolmap_DIR=/usr/local/share/colmap" pip wheel . -w /dist --no-deps
 
 # 5. Build CGAL 6 (Required for OpenMVS)
@@ -98,11 +98,13 @@ RUN git clone https://github.com/nmoehrle/mvs-texturing.git && \
     make -C texturing_build install
 
 
-# ==========================================
+# ===============================================================================================================
 # STAGE 2: DEPLOYABLE RUNTIME
 # Minimal image size, no build tools
-# ==========================================
-FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS runtime
+# ===============================================================================================================
+# FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS runtime
+# Try using nvidia/cuda-base image for even smaller size, but it may lack some runtime dependencies. Fallback to runtime if issues arise.
+FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS runtime
 
 ARG PYTHON_VERSION=3.11
 ENV DEBIAN_FRONTEND=noninteractive
@@ -110,11 +112,26 @@ ENV PATH="/usr/local/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 ENV PIP_ROOT_USER_ACTION=ignore
 
+# Manually install the math libraries COLMAP links against.
+# Note: Version 12-9 must match the base image CUDA version.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcublas-12-9 \
+    libcurand-12-9 \
+    libcufft-12-9 \
+    libcusolver-12-9 \
+    libcusparse-12-9 \
+    && rm -rf /var/lib/apt/lists/*
+
 # 1. Install Runtime Dependencies
 # We install shared libraries (.so) required by the binaries built above.
 # We explicitly avoid -dev packages to keep size down.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         # COLMAP / OpenMVS Runtime Deps
+        libmkl-locale \
+        libmkl-intel-lp64 \
+        libmkl-intel-thread \
+        libmkl-core  \
+        libomp5 \
         libboost-program-options1.83.0 \
         libboost-serialization1.83.0 \
         libboost-iostreams1.83.0 \
@@ -168,10 +185,6 @@ COPY --from=builder-deploy /usr/local/bin/texrecon /usr/local/bin/
 # 4. Copy Shared Resources (COLMAP requires share folder for vocabulary trees etc if used, and shaders)
 COPY --from=builder-deploy /usr/local/share/colmap /usr/local/share/colmap
 
-# 5. Install PyColmap from Wheel (No build deps required now)
-COPY --from=builder-deploy /dist /dist
-RUN python -m pip install /dist/*.whl && rm -rf /dist
-
 # 6. Install Python Requirements
 # NOTE: Optimized for size (no cache, specific torch cuda version)
 COPY requirements.txt /app/requirements.txt
@@ -180,7 +193,9 @@ WORKDIR /app
 # Install PyTorch specifically for CUDA 12 without caching to save space
 # We split this to prevent re-downloading large wheels if requirements.txt changes slightly
 RUN python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 \
-    torch torchvision
+    torch torchvision && \
+    python -m pip install --no-cache-dir -r requirements.txt && \
+    python -m pip install nbstripout
 
 RUN SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages())') && \
     # Remove Distributed Training library (NCCL) - not needed for hloc inference
@@ -195,7 +210,9 @@ RUN SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages())') && \
     # Clean pip cache
     rm -rf /root/.cache/pip
 
-RUN python -m pip install --no-cache-dir -r requirements.txt
+# 5. Install PyColmap from Wheel (No build deps required now)
+COPY --from=builder-deploy /dist /dist
+RUN python -m pip install --no-cache-dir --force-reinstall --upgrade-strategy only-if-needed  /dist/*.whl && rm -rf /dist
 
 # 7. Copy Application Code
 COPY . /app
@@ -203,5 +220,7 @@ COPY . /app
 # Optional: Pre-compile python bytecode for faster startup
 RUN python -m compileall /app
 
-CMD ["python", "main.py"] 
+# CMD ["python", "run_improved_pipeline.py", "--overrides", "dataset=cunit reset=aggressive"] 
 # Replace with your actual entrypoint
+# Dummy command for testing - replace with actual application command
+CMD ["/bin/bash", "-c", "echo 'Container is running. Replace this with your actual command.' && sleep infinity"]
