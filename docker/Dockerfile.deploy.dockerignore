@@ -22,9 +22,9 @@ doc/
 images/
 
 # Select third party submodules of relevance, exclude others 
-third_party/d2net/
-third_party/deep-image-retrieval/
-third_part/r2d2/
+**/third_party/d2net/
+**/third_party/deep-image-retrieval/
+**/third_party/r2d2/
 
 # ignore example pipelines and notebooks
 *.ipynb
