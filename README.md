@@ -97,8 +97,17 @@ Example:
 
 
 
-### Second STage (Fine Reconstruction - *Exploiting*)
+### Second Stage (Fine Reconstruction - *Exploiting*)
 
+### Visualization & Inspection
+
+After running the pipeline, use [`notebooks/visualize.ipynb`](./notebooks/visualize.ipynb) to qualitatively inspect the reconstruction outputs. It provides:
+
+- **2D keypoint visualization** – color keypoints by visibility (blue = successfully triangulated, red = never matched), track length (red = observed many times, blue = few times), or estimated sparse depth.
+- **3D reconstruction viewer** – interactive plotly plot of the sparse point cloud and camera frustums from the reconstructed model.
+- **Query localization** – localize a new query image against the existing model using PnP + RANSAC (`QueryLocalizer`) and visualize the matched database images along with the estimated camera pose in 3D.
+
+The notebook uses the same Hydra configuration as `improved_pipeline.ipynb`, so no additional setup is needed.
 
 # hloc - the hierarchical localization toolbox
 
@@ -121,6 +130,8 @@ With `hloc`, you can:
 ## Quick start ➡️ [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1Eqoz-uLTCGeEWtH95FZyVs2vI-qkTOWr)
 
 Build 3D maps with Structure-from-Motion and localize any Internet image right from your browser! **You can now run `hloc` and COLMAP in Google Colab with GPU for free.** The notebook [`demo.ipynb`](https://colab.research.google.com/drive/1Eqoz-uLTCGeEWtH95FZyVs2vI-qkTOWr) shows how to run SfM and localization in just a few steps. Try it with your own data and let us know!
+
+For the improved two-stage pipeline, run [`notebooks/improved_pipeline.ipynb`](./notebooks/improved_pipeline.ipynb) and then use [`notebooks/visualize.ipynb`](./notebooks/visualize.ipynb) to inspect the results interactively.
 
 ## Installation
 
