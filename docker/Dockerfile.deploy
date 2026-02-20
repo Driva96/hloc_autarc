@@ -1,25 +1,86 @@
-# ==========================================
-# STAGE 1: BUILDER
-# Combines COLMAP, OpenMVS, and CMVS compilation
-# ==========================================
+
 ARG UBUNTU_VERSION=24.04
 ARG NVIDIA_CUDA_VERSION=12.9.1
+# ==========================================
+# STAGE 0: COLMAP
+# ==========================================
+FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS colmap-builder
+
+ARG COLMAP_TAG=3.13.0
+ARG CUDA_ARCHITECTURES=all-major
+ENV QT_XCB_GL_INTEGRATION=xcb_egl
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Prevent stop building ubuntu at time zone selection.
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Prepare and empty machine for building.
+RUN apt-get update && \
+    apt-get install -y \
+        git \
+        cmake \
+        ninja-build \
+        build-essential \
+        software-properties-common \
+        libboost-program-options-dev \
+        libboost-graph-dev \
+        libboost-system-dev \
+        libeigen3-dev \
+        libfreeimage-dev \
+        libopenimageio-dev \
+        openimageio-tools \
+        libmetis-dev \
+        libgoogle-glog-dev \
+        libgtest-dev \
+        libgmock-dev \
+        libsqlite3-dev \
+        libglew-dev \
+        qt6-base-dev \
+        libqt6opengl6-dev \
+        libqt6openglwidgets6 \
+        libcgal-dev \
+        libceres-dev \
+        libcurl4-openssl-dev \
+        libssl-dev \
+        libmkl-full-dev
+
+# Fix issue in Ubuntu's openimageio CMake config.
+# We don't depend on any of openimageio's OpenCV functionality,
+# but it still requires the OpenCV include directory to exist.
+RUN mkdir -p /usr/include/opencv4
+
+# Build and install COLMAP.
+RUN git clone https://github.com/colmap/colmap.git
+RUN cd colmap && \
+    git fetch https://github.com/colmap/colmap.git ${COLMAP_TAG} && \
+    git checkout FETCH_HEAD && \
+    mkdir build && \
+    cmake -S . -B build -GNinja \
+        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
+        -DCMAKE_INSTALL_PREFIX=/colmap-install \
+        -DBLA_VENDOR=Intel10_64lp && \
+    ninja -C build install
+
+# ==========================================
+# STAGE 1: BUILDER
+# Combines OpenMVS, and CMVS compilation
+# ==========================================
 
 FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder-deploy
 
 ENV DEBIAN_FRONTEND=noninteractive
 ARG CUDA_ARCHITECTURES=all-major
+ARG COLMAP_TAG=3.13.0
 
-# [CHANGE 1] Update version to match System Python on Ubuntu 24.04
+# Update version to match System Python on Ubuntu 24.04
 ARG PYTHON_VERSION=3.12
 
-# [CHANGE 2] Allow pip to modify system python (Required for Ubuntu 24.04+)
+# Allow pip to modify system python (Required for Ubuntu 24.04+)
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# COLMAP/OpenMVS Build Args
-ARG COLMAP_TAG=3.13.0
+# OpenMVS Build Args
 ENV EIGEN_BUILD_ARG="-DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/"
-ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major"
+ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/ -DCMAKE_CUDA_ARCHITECTURES=all-major -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3"
 
 # 1. Install ALL build dependencies
 # [CHANGE 3] Added python3-dev, pip, and python-is-python3 directly here.
@@ -31,8 +92,16 @@ RUN apt-get update && apt-get install -y \
         qt6-base-dev libqt6opengl6-dev libqt6openglwidgets6 libcgal-dev \
         libceres-dev libcurl4-openssl-dev libssl-dev libmkl-full-dev \
         libopencv-dev libnanoflann-dev libgmp-dev libmpfr-dev zlib1g-dev \
+        libopenimageio-dev openimageio-tools \
         libjxl-dev libtbb-dev \
-        python3-dev libpython3-dev python3-pip python3-setuptools python3-wheel python-is-python3 && \
+        python3-dev libpython3-dev python3-pip python3-setuptools python3-wheel python-is-python3 \
+        libpng-dev \ 
+        libjpeg-dev \
+        libtiff-dev \
+        libglu1-mesa-dev \
+        libglew-dev \
+        libglfw3-dev && \
+    rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates
 
 # [CHANGE 4] Removed the separate "Install Python via Deadsnakes" block entirely.
@@ -42,27 +111,23 @@ RUN apt-get update && apt-get install -y \
 RUN git config --global http.sslVerify true && \
     git config --global http.postBuffer 524288000
 
-# [CHANGE 5] Keep distro pip and layer a newer pip without uninstalling apt-managed package.
+# Keep distro pip and layer a newer pip without uninstalling apt-managed package.
 RUN python -m pip install --upgrade --ignore-installed pip
 
-# 3. Build COLMAP
-RUN git clone https://github.com/colmap/colmap.git && \
-    cd colmap && \
-    git fetch https://github.com/colmap/colmap.git ${COLMAP_TAG} && \
-    git checkout FETCH_HEAD && \
-    cmake -S . -B build -GNinja \
-        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
-        -DCMAKE_INSTALL_PREFIX=/usr/local \
-        -DBLA_VENDOR=Intel10_64lp && \
-    ninja -C build install
+COPY --from=colmap-builder /colmap-install/ /usr/local/
 
 # 4. Build PyCOLMAP Wheel
 RUN python -m pip install build setuptools wheel tomlkit
+RUN git clone https://github.com/colmap/colmap.git
 RUN cd colmap && \
+    git fetch https://github.com/colmap/colmap.git ${COLMAP_TAG} && \
+    git checkout FETCH_HEAD && \
     python python/ci/update_pyproject_toml.py --name "pycolmap-cuda12" && \
     CMAKE_ARGS="-Dcolmap_DIR=/usr/local/share/colmap" pip wheel . -w /dist --no-deps
 
 # 5. Build CGAL 6
+RUN apt-get remove -y libcgal-dev && \
+    apt-get autoremove -y 
 RUN git clone https://github.com/cgal/cgal --branch=v6.0.1 && \
     cmake -S cgal -B cgal_build \
     -DCMAKE_BUILD_TYPE=Release \
@@ -93,9 +158,37 @@ RUN git clone https://github.com/Driva96/CMVS-PMVS.git && \
     make -C cmvs_build install
 
 # 8. Build MVS-Texturing
-RUN git clone https://github.com/nmoehrle/mvs-texturing.git && \
-    cmake -S mvs-texturing -B texturing_build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    make -C texturing_build install
+# 8. Build MVS-Texturing
+RUN git clone https://github.com/nmoehrle/mvs-texturing.git /mvs-texturing && \
+    # -----------------------------------------------------------------------
+    # 1. Manually clone 'mve' to the location ExternalProject expects
+    # -----------------------------------------------------------------------
+    git clone https://github.com/nmoehrle/mve.git /mvs-texturing/elibs/mve && \
+    # 2. DELETE .git folder to prevent CMake from resetting/updating the folder
+    rm -rf /mvs-texturing/elibs/mve/.git && \
+    # -----------------------------------------------------------------------
+    # 3. Apply the "strings.h" name conflict fix
+    # -----------------------------------------------------------------------
+    # Rename the conflicting header
+    mv /mvs-texturing/elibs/mve/libs/util/strings.h /mvs-texturing/elibs/mve/libs/util/util_strings.h && \
+    # Fix local includes inside 'mve' (replaces #include "strings.h" with "util_strings.h")
+    sed -i 's|"strings.h"|"util_strings.h"|g' /mvs-texturing/elibs/mve/libs/util/*.cc /mvs-texturing/elibs/mve/libs/util/*.h && \
+    # Fix global includes in the whole project (replaces #include "util/strings.h")
+    grep -rl 'util/strings.h' /mvs-texturing | xargs sed -i 's|util/strings.h|util/util_strings.h|g' && \
+    # -----------------------------------------------------------------------
+    # 4. SURGICAL FIX: Disable ONLY the 'mve' git download in elibs/CMakeLists.txt
+    # We match the line containing "mve.git" and comment it out.
+    # -----------------------------------------------------------------------
+    sed -i 's|GIT_REPOSITORY.*https://github.com/nmoehrle/mve.git|# &|' /mvs-texturing/elibs/CMakeLists.txt && \
+    # -----------------------------------------------------------------------
+    # 5. Build
+    # -----------------------------------------------------------------------
+    cd /mvs-texturing && \
+    mkdir build && cd build && \
+    cmake -S .. -B . -DCMAKE_BUILD_TYPE=Release && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && rm -rf build
 
 
 # ===============================================================================================================
@@ -114,7 +207,7 @@ ENV PIP_ROOT_USER_ACTION=ignore
 # [CHANGE 2] Allow pip to modify system python (Required for Ubuntu 24.04+)
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Install Manually libraries for COLMAP (unchanged)
+# Install Manually libraries for COLMAP 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libcublas-12-9 \
     libcurand-12-9 \
@@ -142,6 +235,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglew2.2 \
         libsqlite3-0 \
         libcurl4 \
+        libc6 \
         libqt6core6 libqt6gui6 libqt6widgets6 libqt6opengl6 libqt6openglwidgets6 \
         libopencv-core406t64 libopencv-imgproc406t64 libopencv-imgcodecs406t64 libopencv-calib3d406t64 \
         libtbb12 \
@@ -173,7 +267,7 @@ RUN git config --global http.sslVerify true && \
 # [CHANGE 4] Keep distro pip and layer a newer pip without uninstalling apt-managed package.
 RUN python -m pip install --upgrade --ignore-installed pip
 
-# 3. Copy Binaries from Builder (Unchanged)
+# 3. Copy Binaries from Builder 
 COPY --from=builder-deploy /usr/local/bin/colmap /usr/local/bin/
 COPY --from=builder-deploy /usr/local/bin/OpenMVS* /usr/local/bin/
 COPY --from=builder-deploy /usr/local/bin/cmvs /usr/local/bin/
@@ -181,7 +275,7 @@ COPY --from=builder-deploy /usr/local/bin/pmvs2 /usr/local/bin/
 COPY --from=builder-deploy /usr/local/bin/genOption /usr/local/bin/
 COPY --from=builder-deploy /usr/local/bin/texrecon /usr/local/bin/
 
-# 4. Copy Shared Resources (Unchanged)
+# 4. Copy Shared Resources 
 COPY --from=builder-deploy /usr/local/share/colmap /usr/local/share/colmap
 
 # 6. Install Python Requirements
@@ -194,7 +288,7 @@ RUN python -m pip install --no-cache-dir --extra-index-url https://download.pyto
     python -m pip install --no-cache-dir -r requirements.txt && \
     python -m pip install nbstripout
 
-# PyTorch Cleanup (Unchanged)
+# PyTorch Cleanup 
 RUN SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages()[0])') && \
     rm -rf ${SITE_PACKAGES}/nvidia/nccl_cu12 && \
     rm -rf ${SITE_PACKAGES}/torch/lib/libnccl* && \
@@ -205,7 +299,6 @@ RUN SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages()[0])') &
 
 # 5. Install PyColmap from Wheel
 COPY --from=builder-deploy /dist /dist
-# [CHANGE 5] Removed --force-reinstall as it's a fresh install anyway
 RUN python -m pip install --no-cache-dir /dist/*.whl && rm -rf /dist
 
 # 7. Copy Application Code
