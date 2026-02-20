@@ -1,11 +1,40 @@
 import numpy as np
 import pycolmap
+from . import logger
+import logging
+from pathlib import Path
 
 import pycolmap
 import numpy as np
 from shapely.geometry import Point, MultiPoint
 from shapely.prepared import prep
 from skimage.measure import CircleModel, ransac
+
+
+def _resolve_log_directory(fallback_dir: Path) -> Path:
+    """Resolve the directory where log files are written, with a safe fallback."""
+    for log_obj in (logging.getLogger(), logging.getLogger("hloc")):
+        for handler in log_obj.handlers:
+            if isinstance(handler, logging.FileHandler):
+                base_filename = getattr(handler, "baseFilename", None)
+                if base_filename:
+                    return Path(base_filename).resolve().parent
+    return fallback_dir
+
+
+def _write_trainer_args_txt(output_model_path, c_str: str, n_str: str, radius: float) -> None:
+    """Write trainer cylinder arguments to a txt file next to logging outputs."""
+    fallback_dir = Path(output_model_path).resolve().parent
+    log_dir = _resolve_log_directory(fallback_dir)
+    txt_path = log_dir / "trainer_cylinder_args.txt"
+    args_line = (
+        f'--cylinder_center "{c_str}" '
+        f'--cylinder_axis "{n_str}" '
+        f"--cylinder_radius {radius:.4f}"
+    )
+    txt_path.parent.mkdir(parents=True, exist_ok=True)
+    txt_path.write_text(args_line + "\n", encoding="utf-8")
+    logger.info(f"Saved trainer cylinder args to {txt_path}")
 
 def get_best_fit_circle(points_2d):
     """
@@ -33,11 +62,11 @@ def get_best_fit_circle(points_2d):
         if r > np.max(np.linalg.norm(points_2d, axis=1)) * 10:
              raise ValueError("Radius too large, likely a linear flight path.")
         
-        print(f"Circle fit successful: Center=({cx:.2f}, {cy:.2f}), Radius={r:.2f}")
+        logger.info(f"Circle fit successful: Center=({cx:.2f}, {cy:.2f}), Radius={r:.2f}")
         return np.array([cx, cy]), r
         
     except Exception as e:
-        print(f"Circle fit failed ({e}), falling back to centroid.")
+        logger.warning(f"Circle fit failed ({e}), falling back to centroid.")
         center = np.mean(points_2d, axis=0)
         # Radius covers the furthest point
         radius = np.max(np.linalg.norm(points_2d - center, axis=1))
@@ -77,7 +106,7 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
     plane_basis_v = vh[1]
     normal_axis = vh[2]
     
-    print(f"PCA Plane Normal (Perpendicular to flight): {vh[2]}")
+    logger.info(f"PCA Plane Normal (Perpendicular to flight): {vh[2]}")
 
     # --- Step 3: Define Projection Helper ---
     def project_to_pca_plane(points_3d):
@@ -103,7 +132,7 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
     simple_cylinder_radius = 0.0
     world_geom_center = np.array([0.0, 0.0, 0.0])
     if geofence_mode == 'circle':
-        print("Mode: Circle (Smallest enclosing circle of Hull)")
+        logger.info("Mode: Circle (Smallest enclosing circle of Hull)")
         
         # Calculate the geometric center of the HULL (not the average of points)
         # This provides a tighter fit for irregular flight paths
@@ -128,14 +157,14 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
         # Calc world center for reference
         world_geom_center = centroid + (circle_center_2d[0] * plane_basis_u) + (circle_center_2d[1] * plane_basis_v)
         
-        print(f"Computed Enclosing Radius: {simple_cylinder_radius:.2f}")
+        logger.info(f"Computed Enclosing Radius: {simple_cylinder_radius:.2f}")
     else: # mode == 'hull'
-        print("Mode: Convex Hull Polygon")
+        logger.info("Mode: Convex Hull Polygon")
         
         geofence_poly = base_shape.buffer(buffer_dist)
         prepared_poly = prep(geofence_poly) # Optimization
         
-        print(f"Computed Hull Area on PCA Plane: {geofence_poly.area:.2f}")
+        logger.info(f"Computed Hull Area on PCA Plane: {geofence_poly.area:.2f}")
         
         # For 'hull' mode, we usually define the "trainer cylinder" loosely based on the centroid
         # just for the sake of printing valid arguments below.
@@ -152,16 +181,17 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
         dists_from_geom_center = np.linalg.norm(cam_2d - circle_center_2d, axis=1)
 
         simple_cylinder_radius = np.max(dists_from_geom_center) + buffer_dist
-        print(f"Computed Hull Area: {geofence_poly.area:.2f}")
+        logger.info(f"Computed Hull Area: {geofence_poly.area:.2f}")
     
 
     c_str = f"{world_geom_center[0]:.4f},{world_geom_center[1]:.4f},{world_geom_center[2]:.4f}"
     n_str = f"{normal_axis[0]:.4f},{normal_axis[1]:.4f},{normal_axis[2]:.4f}"
 
-    print("\n" + "-"*50)
-    print(" >>> COPY THESE ARGUMENTS TO YOUR TRAINER COMMAND <<<")
-    print(f'--cylinder_center "{c_str}" --cylinder_axis "{n_str}" --cylinder_radius {simple_cylinder_radius:.4f}')
-    print("-"*50 + "\n")
+    logger.info("\n" + "-"*50)
+    logger.info(" >>> COPY THESE ARGUMENTS TO YOUR TRAINER COMMAND <<<")
+    logger.info(f'--cylinder_center "{c_str}" --cylinder_axis "{n_str}" --cylinder_radius {simple_cylinder_radius:.4f}')
+    logger.info("-"*50 + "\n")
+    _write_trainer_args_txt(output_model_path, c_str, n_str, simple_cylinder_radius)
     # ==============================================================================
 
     # --- Step 5: Filter 3D Points ---
@@ -187,12 +217,12 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
                 points_to_remove.append(p3d_ids[i])
 
     # --- Step 6: Cleanup ---
-    print(f"Removing {len(points_to_remove)} outlier points...")
+    logger.info(f"Removing {len(points_to_remove)} outlier points...")
     for pid in points_to_remove:
         del recon.points3D[pid]
         
     recon.write(output_model_path)
-    print(f"Saved to {output_model_path}")
+    logger.info(f"Saved to {output_model_path}")
 
     return {"center": world_geom_center, "normal": normal_axis, "radius": simple_cylinder_radius}
 
@@ -268,7 +298,7 @@ def compute_adaptive_geofence(reconstruction,
         plane_basis_v = vh[1]
         normal_axis = vh[2]
         
-        print(f"PCA Plane Normal (Perpendicular to flight): {vh[2]}")
+        logger.info(f"PCA Plane Normal (Perpendicular to flight): {vh[2]}")
 
         # --- Step 3: Define Projection Helper ---
         def project_to_pca_plane(points_3d):
@@ -308,7 +338,7 @@ def compute_adaptive_geofence(reconstruction,
             hull_coords = np.array(base_shape.exterior.coords)
         
         if hull_coords is None or len(hull_coords) < 30:  # Arbitrary threshold for "enough" hull points
-            print("Hull is degenerate (line/point), falling back to camera points.")
+            logger.info("Hull is degenerate (line/point), falling back to camera points.")
             hull_coords = cam_2d """
 
         # Calculate radius: Max distance from Hull Center to Hull Vertices + Buffer
@@ -323,7 +353,7 @@ def compute_adaptive_geofence(reconstruction,
         # Calc world center for reference
         world_geom_center = centroid + (circle_center_2d[0] * plane_basis_u) + (circle_center_2d[1] * plane_basis_v)
         
-        print(f"Computed Enclosing Radius: {simple_cylinder_radius:.2f}")
+        logger.info(f"Computed Enclosing Radius: {simple_cylinder_radius:.2f}")
 
         return world_geom_center, simple_cylinder_radius
 
@@ -394,7 +424,7 @@ def compute_adaptive_geofence(reconstruction,
     center_xy = center_xy[:2]  # Only XY
     silo_radius = orbit_radius * silo_ratio
     
-    print(f"[Geofence] Orbit Radius: {orbit_radius:.2f}m | Silo Radius: {silo_radius:.2f}m")
+    logger.info(f"[Geofence] Orbit Radius: {orbit_radius:.2f}m | Silo Radius: {silo_radius:.2f}m")
 
     # 2. Filtering
     silo_z_values = _extract_silo_z_values(reconstruction.points3D, center_xy, silo_radius)
@@ -403,13 +433,13 @@ def compute_adaptive_geofence(reconstruction,
     """ if np.mean(silo_z_values[:, 2], axis=0) < 0:
         silo_z_values[:, 2] = -silo_z_values[:, 2]  
         flipped = True """
-    print(f"[Geofence] Points inside Silo: {len(silo_z_values)}")
+    logger.info(f"[Geofence] Points inside Silo: {len(silo_z_values)}")
 
     # 3. Heights
     z_min, z_max, xyz_max = _calculate_robust_heights(silo_z_values)
     """ if flipped:
         z_min, z_max, xyz_max = -z_min, -z_max, -xyz_max  # Re-flip to original orientation """
-    print(f"[Geofence] Z-Min (Ground): {z_min:.2f}m | Z-Max (Roof): {z_max:.2f}m")
+    logger.info(f"[Geofence] Z-Min (Ground): {z_min:.2f}m | Z-Max (Roof): {z_max:.2f}m")
     
     # 4 Take middle between center_xy and xyz_max for better centering
     weight = 0.5 + (height_center_bias / 2.0)
@@ -422,7 +452,7 @@ def compute_adaptive_geofence(reconstruction,
     # XY limits are the square bounding box of the circular silo
     min_box = np.array([center_xy[0] - silo_radius - silo_radius * safety_margin, center_xy[1] - silo_radius - silo_radius * safety_margin, z_min])
     max_box = np.array([center_xy[0] + silo_radius + silo_radius * safety_margin, center_xy[1] + silo_radius + silo_radius * safety_margin, z_max])
-    print(f"[Geofence] Bounding Box Min: {min_box}, Max: {max_box}")
+    logger.info(f"[Geofence] Bounding Box Min: {min_box}, Max: {max_box}")
     
     return min_box, max_box
 
@@ -434,13 +464,13 @@ if __name__ == "__main__":
     try:
         bbox_min, bbox_max = compute_adaptive_geofence(recon)
         
-        print("\nFinal Calculated Bounding Box:")
-        print(f"Min: {bbox_min}")
-        print(f"Max: {bbox_max}")
+        logger.info("\nFinal Calculated Bounding Box:")
+        logger.info(f"Min: {bbox_min}")
+        logger.info(f"Max: {bbox_max}")
         
         # Format string for COLMAP --workspace
         workspace_str = f"{bbox_min[0]},{bbox_min[1]},{bbox_min[2]},{bbox_max[0]},{bbox_max[1]},{bbox_max[2]}"
-        print(f"\nCOLMAP Workspace String:\n{workspace_str}")
+        logger.info(f"\nCOLMAP Workspace String:\n{workspace_str}")
         
     except ValueError as e:
-        print(f"Error computing geofence: {e}")
+        logger.error(f"Error computing geofence: {e}")
