@@ -42,7 +42,10 @@ RUN apt-get update && \
         libceres-dev \
         libcurl4-openssl-dev \
         libssl-dev \
-        libmkl-full-dev
+        # Intel MKL
+        # libmkl-full-dev
+        # OpenBLAS (much smaller)
+        libopenblas-openmp-dev
 
 # Fix issue in Ubuntu's openimageio CMake config.
 # We don't depend on any of openimageio's OpenCV functionality,
@@ -56,9 +59,12 @@ RUN cd colmap && \
     git checkout FETCH_HEAD && \
     mkdir build && \
     cmake -S . -B build -GNinja \
+        -DGUI_ENABLED=OFF \
+        -DCUDA_ENABLED=ON \
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DCMAKE_INSTALL_PREFIX=/colmap-install \
-        -DBLA_VENDOR=Intel10_64lp && \
+        -DBLA_VENDOR=OpenBLAS \
+        # -DBLA_VENDOR=Intel10_64lp && \
     ninja -C build install
 
 # ==========================================
@@ -80,7 +86,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # OpenMVS Build Args
 ENV EIGEN_BUILD_ARG="-DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/"
-ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/ -DCMAKE_CUDA_ARCHITECTURES=all-major -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3"
+ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -OpenMVS_USE_OPENMP=ON  -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/ -DCMAKE_CUDA_ARCHITECTURES=all-major -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3"
 
 # 1. Install ALL build dependencies
 # [CHANGE 3] Added python3-dev, pip, and python-is-python3 directly here.
@@ -90,7 +96,11 @@ RUN apt-get update && apt-get install -y \
         libboost-all-dev libeigen3-dev libfreeimage-dev libmetis-dev \
         libgoogle-glog-dev libgtest-dev libgmock-dev libsqlite3-dev libglew-dev \
         qt6-base-dev libqt6opengl6-dev libqt6openglwidgets6 libcgal-dev \
-        libceres-dev libcurl4-openssl-dev libssl-dev libmkl-full-dev \
+        libceres-dev libcurl4-openssl-dev libssl-dev \
+        # Intel MKL
+        # libmkl-full-dev \
+        # OpenBLAS (much smaller)
+        libopenblas-openmp-dev \
         libopencv-dev libnanoflann-dev libgmp-dev libmpfr-dev zlib1g-dev \
         libopenimageio-dev openimageio-tools \
         libjxl-dev libtbb-dev \
@@ -143,8 +153,11 @@ RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develo
     git submodule update --init --recursive && \
     sed -i 's/IMWRITE_JPEGXL_QUALITY/IMWRITE_JPEG_QUALITY/g' /openMVS/libs/Common/Types.inl && \
     cmake -S . -B build \
-        -DOpenMVS_USE_QT=ON -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+        -DOpenMVS_USE_QT=OFF -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
         -DCMAKE_BUILD_TYPE=Release \
+        # BLAS Vendor
+        -DBLA_VENDOR=OpenBLAS \
+        #-DBLA_VENDOR=Intel10_64lp \
         -DVCG_ROOT=/vcglib \
         ${OPENMVS_BUILD_ARG} \
         -DCGAL_DIR=/opt/cgal6/lib/cmake/CGAL \
@@ -196,7 +209,7 @@ RUN git clone https://github.com/nmoehrle/mvs-texturing.git /mvs-texturing && \
 # ===============================================================================================================
 FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS runtime
 
-# [CHANGE 1] Update version to match System Python
+# Update version to match System Python
 ARG PYTHON_VERSION=3.12
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -207,22 +220,26 @@ ENV PIP_ROOT_USER_ACTION=ignore
 # [CHANGE 2] Allow pip to modify system python (Required for Ubuntu 24.04+)
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Install Manually libraries for COLMAP 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libcublas-12-9 \
-    libcurand-12-9 \
-    libcufft-12-9 \
-    libcusolver-12-9 \
-    libcusparse-12-9 \
-    && rm -rf /var/lib/apt/lists/*
 
 # 1. Install Runtime Dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libmkl-locale \
-        libmkl-intel-lp64 \
-        libmkl-intel-thread \
-        libmkl-core  \
-        libomp5 \
+        # CUDA Math Libs
+        libcublas-12-9 \
+        libcurand-12-9 \
+        libcufft-12-9 \
+        libcusolver-12-9 \
+        libcusparse-12-9 \
+        # Python 
+        python3-pip python-is-python3 \
+        # MKL
+        # libmkl-intel-lp64 \
+        # libmkl-intel-thread \
+        # libmkl-core  \
+        # OpenBLAS (much smaller)
+        libopenblas0-openmp
+        # System Libs 
+        libomp1 \
+        # libomp5 probably not necessary (CLANG lib)
         libboost-program-options1.83.0 \
         libboost-serialization1.83.0 \
         libboost-iostreams1.83.0 \
@@ -232,48 +249,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgoogle-glog0v6t64 \
         libfreeimage3 \
         libgomp1 \
-        libglew2.2 \
         libsqlite3-0 \
         libcurl4 \
-        libc6 \
-        libqt6core6 libqt6gui6 libqt6widgets6 libqt6opengl6 libqt6openglwidgets6 \
+        # libc6 \
+        # Uncomment if not running in headless mode 
+        # libqt6core6 libqt6gui6 libqt6widgets6 libqt6opengl6 libqt6openglwidgets6 \
+        # Basic OpenGL support
+        libglew2.2 libgl1 \
         libopencv-core406t64 libopencv-imgproc406t64 libopencv-imgcodecs406t64 libopencv-calib3d406t64 \
         libtbb12 \
         libjxl0.7 \
         libmetis5 \
-        libceres4t64 \
-        libgl1 \
-        unzip wget git && \
+        libceres4t64 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates
 
-# 2. Setup Python
-# [CHANGE 3] Simplified Python Setup.
-# - Removed PPA (deadsnakes)
-# - Removed software-properties-common
-# - Removed -dev packages (not needed for runtime wheel installation)
-# - Added python-is-python3 (aliases `python` -> `python3`)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    python3-pip \
-    python-is-python3 && \
-    rm -rf /var/lib/apt/lists/*
-
-# Configure git
-RUN git config --global http.sslVerify true && \
-    git config --global http.postBuffer 524288000
-
-# [CHANGE 4] Keep distro pip and layer a newer pip without uninstalling apt-managed package.
+# Keep distro pip and layer a newer pip without uninstalling apt-managed package.
 RUN python -m pip install --upgrade --ignore-installed pip
 
-# 3. Copy Binaries from Builder 
+# 3.1 Copy Binaries from Builder 
 COPY --from=builder-deploy /usr/local/bin/colmap /usr/local/bin/
 COPY --from=builder-deploy /usr/local/bin/OpenMVS* /usr/local/bin/
-COPY --from=builder-deploy /usr/local/bin/cmvs /usr/local/bin/
-COPY --from=builder-deploy /usr/local/bin/pmvs2 /usr/local/bin/
+# Uncomment if needed
+#COPY --from=builder-deploy /usr/local/bin/cmvs /usr/local/bin/
+#COPY --from=builder-deploy /usr/local/bin/pmvs2 /usr/local/bin/
 COPY --from=builder-deploy /usr/local/bin/genOption /usr/local/bin/
 COPY --from=builder-deploy /usr/local/bin/texrecon /usr/local/bin/
+
+# 3.2 Strip Binaries 
+# For debugguging comment the following (Human readable debug messages)
+RUN strip --strip-unneeded /usr/local/bin/colmap \
+    /usr/local/bin/OpenMVS* \
+    #/usr/local/bin/cmvs \
+    #/usr/local/bin/pmvs2 \
+    /usr/local/bin/texrecon
+    
+# If running with INtel MKL support 
+# RUN strip --strip-unneeded /usr/lib/x86_64-linux-gnu/libmkl_*.so
 
 # 4. Copy Shared Resources 
 COPY --from=builder-deploy /usr/local/share/colmap /usr/local/share/colmap
