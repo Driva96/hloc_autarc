@@ -63,7 +63,7 @@ RUN cd colmap && \
         -DCUDA_ENABLED=ON \
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DCMAKE_INSTALL_PREFIX=/colmap-install \
-        -DBLA_VENDOR=OpenBLAS \
+        -DBLA_VENDOR=OpenBLAS && \
         # -DBLA_VENDOR=Intel10_64lp && \
     ninja -C build install
 
@@ -86,7 +86,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # OpenMVS Build Args
 ENV EIGEN_BUILD_ARG="-DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/"
-ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -OpenMVS_USE_OPENMP=ON  -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/ -DCMAKE_CUDA_ARCHITECTURES=all-major -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3"
+ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DOpenMVS_USE_OPENMP=ON  -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/ -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/ -DCUDA_INCLUDE_DIRS=/usr/local/cuda/include/ -DCUDA_CUDART_LIBRARY=/usr/local/cuda/lib64 -DCUDA_NVCC_EXECUTABLE=/usr/local/cuda/bin/ -DCMAKE_CUDA_ARCHITECTURES=all-major"
 
 # 1. Install ALL build dependencies
 # [CHANGE 3] Added python3-dev, pip, and python-is-python3 directly here.
@@ -147,7 +147,10 @@ RUN git clone https://github.com/cgal/cgal --branch=v6.0.1 && \
 # 6. Build OpenMVS
 ENV CPLUS_INCLUDE_PATH="/usr/include/python3.12:$CPLUS_INCLUDE_PATH"
 
+#VCG and Eigen are OpenMVS dependencies that we need to build first.
 RUN git clone https://github.com/cdcseacave/VCG.git /vcglib
+RUN git clone https://gitlab.com/libeigen/eigen /eigen34 --branch 3.4 
+
 RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develop && \
     cd /openMVS && \
     git submodule update --init --recursive && \
@@ -158,10 +161,14 @@ RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develo
         # BLAS Vendor
         -DBLA_VENDOR=OpenBLAS \
         #-DBLA_VENDOR=Intel10_64lp \
+        -DEIGEN3_INCLUDE_DIR=/eigen34 \
+        # -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3 \
+        -DOpenMVS_MAX_CUDA_COMPATIBILITY=ON \
         -DVCG_ROOT=/vcglib \
         ${OPENMVS_BUILD_ARG} \
+        -DOpenMVS_ENABLE_TESTS=OFF \
         -DCGAL_DIR=/opt/cgal6/lib/cmake/CGAL \
-        -DCMAKE_INSTALL_PREFIX=/usr/local && \
+        -DCMAKE_INSTALL_PREFIX=/openmvs && \
     cmake --build build -j$(nproc) --config Release && \
     cmake --install build
 
@@ -236,10 +243,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # libmkl-intel-thread \
         # libmkl-core  \
         # OpenBLAS (much smaller)
-        libopenblas0-openmp
+        libopenblas0-openmp \
         # System Libs 
-        libomp1 \
-        # libomp5 probably not necessary (CLANG lib)
+        libomp5 \
         libboost-program-options1.83.0 \
         libboost-serialization1.83.0 \
         libboost-iostreams1.83.0 \
@@ -255,8 +261,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # Uncomment if not running in headless mode 
         # libqt6core6 libqt6gui6 libqt6widgets6 libqt6opengl6 libqt6openglwidgets6 \
         # Basic OpenGL support
-        libglew2.2 libgl1 \
+        libglew2.2 libgl1 libopengl0 \
         libopencv-core406t64 libopencv-imgproc406t64 libopencv-imgcodecs406t64 libopencv-calib3d406t64 \
+        # GLIB for OpenCV and OpenMVS
+        libglib2.0-0 \
         libtbb12 \
         libjxl0.7 \
         libmetis5 \
@@ -270,7 +278,7 @@ RUN python -m pip install --upgrade --ignore-installed pip
 
 # 3.1 Copy Binaries from Builder 
 COPY --from=builder-deploy /usr/local/bin/colmap /usr/local/bin/
-COPY --from=builder-deploy /usr/local/bin/OpenMVS* /usr/local/bin/
+COPY --from=builder-deploy /openmvs/bin /usr/local/bin/
 # Uncomment if needed
 #COPY --from=builder-deploy /usr/local/bin/cmvs /usr/local/bin/
 #COPY --from=builder-deploy /usr/local/bin/pmvs2 /usr/local/bin/
@@ -279,11 +287,15 @@ COPY --from=builder-deploy /usr/local/bin/texrecon /usr/local/bin/
 
 # 3.2 Strip Binaries 
 # For debugguging comment the following (Human readable debug messages)
-RUN strip --strip-unneeded /usr/local/bin/colmap \
-    /usr/local/bin/OpenMVS* \
+RUN apt-get update && apt-get install -y binutils && \
+    strip --strip-unneeded /usr/local/bin/colmap \
+    /usr/local/bin/OpenMVS/* \
     #/usr/local/bin/cmvs \
     #/usr/local/bin/pmvs2 \
-    /usr/local/bin/texrecon
+    /usr/local/bin/texrecon && \
+    apt-get remove -y binutils && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
     
 # If running with INtel MKL support 
 # RUN strip --strip-unneeded /usr/lib/x86_64-linux-gnu/libmkl_*.so
@@ -296,10 +308,15 @@ COPY requirements.txt /app/requirements.txt
 WORKDIR /app
 
 # Install PyTorch
-RUN python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git wget unzip && \
+    python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 \
     torch torchvision && \
     python -m pip install --no-cache-dir -r requirements.txt && \
-    python -m pip install nbstripout
+    python -m pip install nbstripout && \
+    apt-get remove -y git wget unzip && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # PyTorch Cleanup 
 RUN SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages()[0])') && \

@@ -10,7 +10,7 @@
   "hostRequirements": {
     "gpu": "optional" 
   },
-  "postCreateCommand": "python -m pip install --no-deps -e . --no-build-isolation && nbstripout --install",
+  "postCreateCommand": "apt-get install git && python -m pip install --no-deps -e . --no-build-isolation && nbstripout --install",
   "customizations": {
     "vscode": {
       "extensions": [

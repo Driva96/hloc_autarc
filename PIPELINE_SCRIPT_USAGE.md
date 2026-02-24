@@ -3,6 +3,8 @@
 ## Installation
 
 ```bash
+# Install torch torchvision 
+pip install --extra-index-url https://download.pytorch.org/whl/cu124 torch torchvision
 # Install dependencies
 pip install -r requirements.txt
 
