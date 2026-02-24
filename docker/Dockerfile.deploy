@@ -1,11 +1,13 @@
 
 ARG UBUNTU_VERSION=24.04
 ARG NVIDIA_CUDA_VERSION=12.9.1
+ARG BLA_VENDOR=OpenBLAS
 # ==========================================
 # STAGE 0: COLMAP
 # ==========================================
 FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS colmap-builder
 
+ARG BLA_VENDOR
 ARG COLMAP_TAG=3.13.0
 ARG CUDA_ARCHITECTURES=all-major
 ENV QT_XCB_GL_INTEGRATION=xcb_egl
@@ -15,7 +17,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Prepare and empty machine for building.
-RUN apt-get update && \
+RUN BLAS_DEV_PKG=$([ "${BLA_VENDOR}" = "Intel10_64lp" ] && echo "libmkl-full-dev" || echo "libopenblas-openmp-dev") && \
+    apt-get update && \
     apt-get install -y \
         git \
         cmake \
@@ -42,10 +45,7 @@ RUN apt-get update && \
         libceres-dev \
         libcurl4-openssl-dev \
         libssl-dev \
-        # Intel MKL
-        # libmkl-full-dev
-        # OpenBLAS (much smaller)
-        libopenblas-openmp-dev
+        ${BLAS_DEV_PKG}
 
 # Fix issue in Ubuntu's openimageio CMake config.
 # We don't depend on any of openimageio's OpenCV functionality,
@@ -63,8 +63,7 @@ RUN cd colmap && \
         -DCUDA_ENABLED=ON \
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DCMAKE_INSTALL_PREFIX=/colmap-install \
-        -DBLA_VENDOR=OpenBLAS && \
-        # -DBLA_VENDOR=Intel10_64lp && \
+        -DBLA_VENDOR=${BLA_VENDOR} && \
     ninja -C build install
 
 # ==========================================
@@ -75,6 +74,7 @@ RUN cd colmap && \
 FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder-deploy
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG BLA_VENDOR
 ARG CUDA_ARCHITECTURES=all-major
 ARG COLMAP_TAG=3.13.0
 
@@ -91,16 +91,13 @@ ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DOpenMVS_USE_OPENMP=ON  -DCMAKE_LI
 # 1. Install ALL build dependencies
 # [CHANGE 3] Added python3-dev, pip, and python-is-python3 directly here.
 # Removed external PPA setup.
-RUN apt-get update && apt-get install -y \
+RUN BLAS_DEV_PKG=$([ "${BLA_VENDOR}" = "Intel10_64lp" ] && echo "libmkl-full-dev" || echo "libopenblas-openmp-dev") && \
+    apt-get update && apt-get install -y \
         git cmake ninja-build build-essential software-properties-common wget unzip \
         libboost-all-dev libeigen3-dev libfreeimage-dev libmetis-dev \
         libgoogle-glog-dev libgtest-dev libgmock-dev libsqlite3-dev libglew-dev \
         qt6-base-dev libqt6opengl6-dev libqt6openglwidgets6 libcgal-dev \
         libceres-dev libcurl4-openssl-dev libssl-dev \
-        # Intel MKL
-        # libmkl-full-dev \
-        # OpenBLAS (much smaller)
-        libopenblas-openmp-dev \
         libopencv-dev libnanoflann-dev libgmp-dev libmpfr-dev zlib1g-dev \
         libopenimageio-dev openimageio-tools \
         libjxl-dev libtbb-dev \
@@ -110,7 +107,8 @@ RUN apt-get update && apt-get install -y \
         libtiff-dev \
         libglu1-mesa-dev \
         libglew-dev \
-        libglfw3-dev && \
+        libglfw3-dev \
+        ${BLAS_DEV_PKG} && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates
 
@@ -159,8 +157,7 @@ RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develo
         -DOpenMVS_USE_QT=OFF -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
         -DCMAKE_BUILD_TYPE=Release \
         # BLAS Vendor
-        -DBLA_VENDOR=OpenBLAS \
-        #-DBLA_VENDOR=Intel10_64lp \
+        -DBLA_VENDOR=${BLA_VENDOR} \
         -DEIGEN3_INCLUDE_DIR=/eigen34 \
         # -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3 \
         -DOpenMVS_MAX_CUDA_COMPATIBILITY=ON \
@@ -218,6 +215,7 @@ FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS runtime
 
 # Update version to match System Python
 ARG PYTHON_VERSION=3.12
+ARG BLA_VENDOR
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/usr/local/bin:${PATH}"
@@ -229,7 +227,8 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 
 # 1. Install Runtime Dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN BLAS_RUNTIME_PKGS=$([ "${BLA_VENDOR}" = "Intel10_64lp" ] && echo "libmkl-intel-lp64 libmkl-intel-thread libmkl-core" || echo "libopenblas0-openmp") && \
+    apt-get update && apt-get install -y --no-install-recommends \
         # CUDA Math Libs
         libcublas-12-9 \
         libcurand-12-9 \
@@ -238,12 +237,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libcusparse-12-9 \
         # Python 
         python3-pip python-is-python3 \
-        # MKL
-        # libmkl-intel-lp64 \
-        # libmkl-intel-thread \
-        # libmkl-core  \
-        # OpenBLAS (much smaller)
-        libopenblas0-openmp \
         # System Libs 
         libomp5 \
         libboost-program-options1.83.0 \
@@ -268,7 +261,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libtbb12 \
         libjxl0.7 \
         libmetis5 \
-        libceres4t64 && \
+        libceres4t64 \
+        ${BLAS_RUNTIME_PKGS} && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates
