@@ -1,0 +1,226 @@
+# ==========================================
+# STAGE 1: BUILDER
+# Combines COLMAP, OpenMVS, and CMVS compilation
+# ==========================================
+ARG UBUNTU_VERSION=24.04
+ARG NVIDIA_CUDA_VERSION=12.9.1
+
+FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder-deploy
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG CUDA_ARCHITECTURES=all-major
+ARG PYTHON_VERSION=3.11
+# COLMAP/OpenMVS Build Args
+ARG COLMAP_TAG=3.13.0
+ENV EIGEN_BUILD_ARG="-DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda/"
+# Adjusted OpenMVS args for build environment
+ENV OPENMVS_BUILD_ARG="-DOpenMVS_USE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=all-major"
+
+# 1. Install ALL build dependencies at once to leverage layer caching
+RUN apt-get update && apt-get install -y \
+        git cmake ninja-build build-essential software-properties-common wget unzip \
+        libboost-all-dev libeigen3-dev libfreeimage-dev libmetis-dev \
+        libgoogle-glog-dev libgtest-dev libgmock-dev libsqlite3-dev libglew-dev \
+        qt6-base-dev libqt6opengl6-dev libqt6openglwidgets6 libcgal-dev \
+        libceres-dev libcurl4-openssl-dev libssl-dev libmkl-full-dev \
+        libopencv-dev libnanoflann-dev libgmp-dev libmpfr-dev zlib1g-dev \
+        libjxl-dev libtbb-dev &&\
+        # python${PYTHON_VERSION} python${PYTHON_VERSION}-dev \
+        # python3-pip python3-setuptools python3-wheel
+    update-ca-certificates
+
+# 2. Install Python and pip (separately to leverage caching)
+RUN add-apt-repository ppa:deadsnakes/ppa && \
+apt-get -y update && \
+apt-get install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-dev
+
+# Configure git for better SSL handling
+RUN git config --global http.sslVerify true && \
+    git config --global http.postBuffer 524288000
+
+RUN wget https://bootstrap.pypa.io/get-pip.py && python${PYTHON_VERSION} get-pip.py
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1
+
+RUN python -m pip install --upgrade pip
+
+# 3. Build COLMAP
+RUN git clone https://github.com/colmap/colmap.git && \
+    cd colmap && \
+    git fetch https://github.com/colmap/colmap.git ${COLMAP_TAG} && \
+    git checkout FETCH_HEAD && \
+    cmake -S . -B build -GNinja \
+        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DBLA_VENDOR=Intel10_64lp && \
+    ninja -C build install
+
+# 4. Build PyCOLMAP Wheel
+RUN python -m pip install build setuptools wheel tomlkit
+RUN cd colmap && \
+    python python/ci/update_pyproject_toml.py --name "pycolmap-cuda12" && \
+    CMAKE_ARGS="-Dcolmap_DIR=/usr/local/share/colmap" pip wheel . -w /dist --no-deps
+
+# 5. Build CGAL 6 (Required for OpenMVS)
+RUN git clone https://github.com/cgal/cgal --branch=v6.0.1 && \
+    cmake -S cgal -B cgal_build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/opt/cgal6 && \
+    cmake --build cgal_build --target install
+
+# 6. Build OpenMVS
+# Clone VCG
+RUN git clone https://github.com/cdcseacave/VCG.git /vcglib
+# Build OpenMVS
+RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develop && \
+    cd /openMVS && \
+    git submodule update --init --recursive && \
+    sed -i 's/IMWRITE_JPEGXL_QUALITY/IMWRITE_JPEG_QUALITY/g' /openMVS/libs/Common/Types.inl && \
+    cmake -S . -B build \
+        -DOpenMVS_USE_QT=ON -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DVCG_ROOT=/vcglib \
+        ${OPENMVS_BUILD_ARG} \
+        -DCGAL_DIR=/opt/cgal6/lib/cmake/CGAL \
+        -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    cmake --build build -j$(nproc) --config Release && \
+    cmake --install build
+
+# 7. Build CMVS-PMVS
+RUN git clone https://github.com/Driva96/CMVS-PMVS.git && \
+    cmake -S CMVS-PMVS/program -B cmvs_build -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    make -C cmvs_build install
+
+# 8. Build MVS-Texturing
+RUN git clone https://github.com/nmoehrle/mvs-texturing.git && \
+    cmake -S mvs-texturing -B texturing_build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    make -C texturing_build install
+
+
+# ===============================================================================================================
+# STAGE 2: DEPLOYABLE RUNTIME
+# Minimal image size, no build tools
+# ===============================================================================================================
+# FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS runtime
+# Try using nvidia/cuda-base image for even smaller size, but it may lack some runtime dependencies. Fallback to runtime if issues arise.
+FROM nvidia/cuda:${NVIDIA_CUDA_VERSION}-base-ubuntu${UBUNTU_VERSION} AS runtime
+
+ARG PYTHON_VERSION=3.11
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/usr/local/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
+ENV PIP_ROOT_USER_ACTION=ignore
+
+# Manually install the math libraries COLMAP links against.
+# Note: Version 12-9 must match the base image CUDA version.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcublas-12-9 \
+    libcurand-12-9 \
+    libcufft-12-9 \
+    libcusolver-12-9 \
+    libcusparse-12-9 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1. Install Runtime Dependencies
+# We install shared libraries (.so) required by the binaries built above.
+# We explicitly avoid -dev packages to keep size down.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # COLMAP / OpenMVS Runtime Deps
+        libmkl-locale \
+        libmkl-intel-lp64 \
+        libmkl-intel-thread \
+        libmkl-core  \
+        libomp5 \
+        libboost-program-options1.83.0 \
+        libboost-serialization1.83.0 \
+        libboost-iostreams1.83.0 \
+        libboost-filesystem1.83.0 \
+        libboost-system1.83.0 \
+        libboost-graph1.83.0 \
+        libgoogle-glog0v6t64 \
+        libfreeimage3 \
+        libgomp1 \
+        libglew2.2 \
+        libsqlite3-0 \
+        libcurl4 \
+        libqt6core6 libqt6gui6 libqt6widgets6 libqt6opengl6 libqt6openglwidgets6 \
+        libopencv-core406t64 libopencv-imgproc406t64 libopencv-imgcodecs406t64 libopencv-calib3d406t64 \
+        libtbb12 \
+        libjxl0.7 \
+        libmetis5 \
+        libceres4t64 \
+        libgl1 \
+        # System Utils
+        unzip wget software-properties-common git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    update-ca-certificates
+
+# 2. Setup Python
+# 2. Install Python and pip (separately to leverage caching)
+RUN add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get -y update && \
+    apt-get install -y python${PYTHON_VERSION} python${PYTHON_VERSION}-distutils
+
+# Configure git for better SSL handling
+RUN git config --global http.sslVerify true && \
+    git config --global http.postBuffer 524288000
+
+RUN wget https://bootstrap.pypa.io/get-pip.py && python${PYTHON_VERSION} get-pip.py
+
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python${PYTHON_VERSION} 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 && \
+    python -m pip install --upgrade pip
+
+
+# 3. Copy Binaries from Builder
+COPY --from=builder-deploy /usr/local/bin/colmap /usr/local/bin/
+COPY --from=builder-deploy /usr/local/bin/OpenMVS* /usr/local/bin/
+COPY --from=builder-deploy /usr/local/bin/cmvs /usr/local/bin/
+COPY --from=builder-deploy /usr/local/bin/pmvs2 /usr/local/bin/
+COPY --from=builder-deploy /usr/local/bin/genOption /usr/local/bin/
+COPY --from=builder-deploy /usr/local/bin/texrecon /usr/local/bin/
+
+# 4. Copy Shared Resources (COLMAP requires share folder for vocabulary trees etc if used, and shaders)
+COPY --from=builder-deploy /usr/local/share/colmap /usr/local/share/colmap
+
+# 6. Install Python Requirements
+# NOTE: Optimized for size (no cache, specific torch cuda version)
+COPY requirements.txt /app/requirements.txt
+WORKDIR /app
+
+# Install PyTorch specifically for CUDA 12 without caching to save space
+# We split this to prevent re-downloading large wheels if requirements.txt changes slightly
+RUN python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 \
+    torch torchvision && \
+    python -m pip install --no-cache-dir -r requirements.txt && \
+    python -m pip install nbstripout
+
+RUN SITE_PACKAGES=$(python -c 'import site; print(site.getsitepackages())') && \
+    # Remove Distributed Training library (NCCL) - not needed for hloc inference
+    rm -rf ${SITE_PACKAGES}/nvidia/nccl_cu12 && \
+    rm -rf ${SITE_PACKAGES}/torch/lib/libnccl* && \
+    # Remove C++ headers
+    rm -rf ${SITE_PACKAGES}/torch/include && \
+    # Remove test code
+    rm -rf ${SITE_PACKAGES}/torch/test && \
+    # Strip debug symbols from PyTorch libraries (reduces size slightly)
+    find ${SITE_PACKAGES}/torch/lib -name "*.so" -exec strip --strip-unneeded {} + || true && \
+    # Clean pip cache
+    rm -rf /root/.cache/pip
+
+# 5. Install PyColmap from Wheel (No build deps required now)
+COPY --from=builder-deploy /dist /dist
+RUN python -m pip install --no-cache-dir --force-reinstall --upgrade-strategy only-if-needed  /dist/*.whl && rm -rf /dist
+
+# 7. Copy Application Code
+COPY . /app
+
+# Optional: Pre-compile python bytecode for faster startup
+RUN python -m compileall /app
+
+# CMD ["python", "run_improved_pipeline.py", "--overrides", "dataset=cunit reset=aggressive"] 
+# Replace with your actual entrypoint
+# Dummy command for testing - replace with actual application command
+CMD ["/bin/bash", "-c", "echo 'Container is running. Replace this with your actual command.' && sleep infinity"]

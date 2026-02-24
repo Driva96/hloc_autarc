@@ -336,7 +336,7 @@ def main(
 
             # Combine checks
             valid_keypoint = inside_image & on_mask 
-            print(f"[{name}] KPs total: {len(kps)} | In mask: {np.sum(valid_keypoint)} | % of on mask {np.sum(on_mask)/on_mask.size} | image size {np.min(kps), np.max(kps)} | Valid mask: {np.sum(valid_keypoint)}")
+            logger.info(f"[{name}] KPs total: {len(kps)} | In mask: {np.sum(valid_keypoint)} | % of on mask {np.sum(on_mask)/on_mask.size} | image size {np.min(kps), np.max(kps)} | Valid mask: {np.sum(valid_keypoint)}")
             
             """ # Alternative check:
             # Check bounds and mask value

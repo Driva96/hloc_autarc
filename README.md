@@ -1,4 +1,31 @@
 # Additions
+
+## Improved Pipeline Script
+
+A production-ready script version of `notebooks/improved_pipeline.ipynb` is now available!
+
+**Quick Start:**
+```bash
+# Run with default configuration
+python run_improved_pipeline.py
+
+# Run with custom dataset and settings
+python run_improved_pipeline.py --overrides dataset=cunit reset=aggressive
+```
+
+**Features:**
+- ✅ Fully automated two-stage photogrammetry pipeline
+- ✅ Command-line interface with Hydra config support
+- ✅ No user interaction required once started
+- ✅ Supports all configuration options from the notebook
+
+**Documentation:**
+- [Quick Start Guide](PIPELINE_SCRIPT_USAGE.md)
+- [Full Documentation](doc/run_improved_pipeline.md)
+- [Configuration Guide](configs/README.md)
+
+---
+
 ## AWS
 - storage mount: `/dev/sdb`
 - chosen AMI needs:
