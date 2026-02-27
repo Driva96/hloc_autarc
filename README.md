@@ -99,6 +99,54 @@ Example:
 
 ### Second Stage (Fine Reconstruction - *Exploiting*)
 
+With the geofencing masks in hand, Stage 2 performs a high-precision reconstruction that focuses exclusively on the Region of Interest.
+
+**1. Input preparation**
+
+The raw images are resized to the resolution expected by the Stage 2 feature extractor (e.g. 1600 px on the long edge for `superpoint_max`) and written to `{raw_images}/resized/`. The geofencing masks generated in the intermediate step are resized to the same dimensions and placed in `{raw_images}/resized/masks_geo/`. This ensures the extractor and the masks are pixel-aligned.
+
+**2. Feature extraction (SuperPoint + masks)**
+
+[SuperPoint](https://arxiv.org/abs/1712.07629) keypoints and descriptors are extracted from every resized image. The geofencing mask is passed to the extractor so that keypoints detected in masked-out regions (sky, ground, and other background) are suppressed before any matching takes place. This produces a much cleaner feature set concentrated on the object of interest.
+
+**3. Pair generation guided by Stage 1 poses**
+
+Instead of exhaustively matching all image pairs (O(n²)), the pipeline queries the coarse reconstruction from Stage 1: for each image the `N` spatially closest cameras (pose-based neighbors) are identified with `pairs_from_poses`. This dramatically reduces the number of pairs that need to be matched while still capturing all relevant overlaps, because Stage 1 already established a reliable camera layout.
+
+**4. Feature matching (LightGlue)**
+
+The selected pairs are matched with [LightGlue](https://github.com/cvg/LightGlue), a fast and accurate learned matcher that is particularly well-suited for the high-quality SuperPoint descriptors. Because only a small, targeted set of pairs is processed, matching remains fast even for large image collections.
+
+**5. Sparse reconstruction and pose refinement**
+
+The matches are handed to COLMAP for triangulation. Starting from the image pairs and their verified feature correspondences, COLMAP builds a refined sparse point cloud and re-estimates all camera poses. The result is a highly accurate SfM model significantly better than the coarse Stage 1 output.
+
+**Key outputs:**
+
+| Path | Description |
+|------|-------------|
+| `sfm_{extractor}+{matcher}/` | Full Stage 2 sparse reconstruction (e.g. `sfm_superpoint+lightglue/`) |
+| `sfm_{extractor}+{matcher}/geofenced/` | Geofenced sub-model (sky/ground removed) – ready for Gaussian Splatting |
+
+The `sfm_superpoint+lightglue/` model is used as input to OpenMVS for dense point cloud generation and mesh reconstruction. The `geofenced/` sub-model is the recommended starting point for training 3D Gaussian Splats.
+
+**Configuration and running:**
+
+Stage 2 parameters (extractor, matcher, number of pose-based neighbors) are controlled via the `stage2/` config group – see [`configs/README.md`](configs/README.md) for all options. To run the full pipeline including Stage 2:
+
+```bash
+# Default (SuperPoint + LightGlue)
+python run_improved_pipeline.py
+
+# Alternative extractor/matcher
+python run_improved_pipeline.py --overrides stage2=disk_superglue
+
+# Re-run Stage 2 only
+python run_improved_pipeline.py --overrides reset=stage2_only
+```
+
+See [`PIPELINE_SCRIPT_USAGE.md`](PIPELINE_SCRIPT_USAGE.md) for a quick-start guide and [`doc/run_improved_pipeline.md`](doc/run_improved_pipeline.md) for full documentation.
+
 ### Visualization & Inspection
 
 After running the pipeline, use [`notebooks/visualize.ipynb`](./notebooks/visualize.ipynb) to qualitatively inspect the reconstruction outputs. It provides:
