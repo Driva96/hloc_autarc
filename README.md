@@ -36,7 +36,7 @@ python run_improved_pipeline.py --overrides dataset=cunit reset=aggressive
 - TMP and Build Dir changes: 
 
 ## Colmap 
-Colmap may create multiple models depending on the complexity of the scene. This can be fixed simply by selecting the biggest model reconstructed. A better appraoch should be found in future work
+Colmap may create multiple models depending on the complexity of the scene. This can be fixed simply by selecting the biggest model reconstructed. A better approach should be found in future work
 
 ## Hydra Conf
 Allows for easy configuration via a json file. It allows setting via command as well and provides functionality to run multiple runs at once with different configurations. The latter helps for quality benchmarking. 
@@ -47,9 +47,9 @@ The first stage uses [COLMAP](https://github.com/colmap/colmap) with regular and
 
 ### The intermediate
 The model from Stage 1 gives us the ability to know which areas in the images actually represent our Region of Interest (ROI). 
-From the tutorial for drone footage capturing we know that the images are captured circuling the ROI. 
-Knowing the rough camera poisitions we construct the best fitting circle describing the flight path using PCA and assume our object lies within that circle. From this we get a plane fitted in 3D. A further ransac approach gives us the circle on that plane. 
-We take the center of that circle and construct a convex hull arround all cameras. We then calculate the distance from the outer edge of the hull or all cameras positions to the circle center found by ransac and take the upper 90th percentile as a robust hull radius. To balance even further and to get the bigger picture of the flight path instead of just the outer camera poisitions we average with the radius from the PCA approach above. 
+From the tutorial for drone footage capturing we know that the images are captured circling the ROI. 
+Knowing the rough camera positions we construct the best fitting circle describing the flight path using PCA and assume our object lies within that circle. From this we get a plane fitted in 3D. A further RANSAC approach gives us the circle on that plane. 
+We take the center of that circle and construct a convex hull around all cameras. We then calculate the distance from the outer edge of the hull of all camera positions to the circle center found by RANSAC and take the upper 90th percentile as a robust hull radius. To balance even further and to get the bigger picture of the flight path instead of just the outer camera positions we average with the radius from the PCA approach above. 
 To get a bounding box in 3d, we further need to estimate the height of our object - `_calculate_robust_heights`
 
 **Geo masking**
@@ -146,6 +146,39 @@ python run_improved_pipeline.py --overrides reset=stage2_only
 ```
 
 See [`PIPELINE_SCRIPT_USAGE.md`](PIPELINE_SCRIPT_USAGE.md) for a quick-start guide and [`doc/run_improved_pipeline.md`](doc/run_improved_pipeline.md) for full documentation.
+
+### Dense Reconstruction (OpenMVS)
+
+After Stage 2 produces the refined sparse model, the pipeline optionally hands it off to [OpenMVS](https://github.com/cdcseacave/openMVS) for dense reconstruction, mesh generation, and texturing.
+
+**Steps performed:**
+
+1. **Dense point cloud** – `DensifyPointCloud` projects multi-view depth maps and fuses them into a dense point cloud (`mvs_workspace/scene_dense.ply`).
+2. **Surface mesh** – Poisson surface reconstruction creates a watertight mesh, which is then cropped, hole-filled, and decimated (`mvs_workspace/mesh_poisson.ply`).
+3. **Mesh refinement** – `ReconstructMesh` refines the mesh geometry against the original images (`mvs_workspace/scene_mesh_refined.ply`).
+4. **Texturing** – High-resolution textures are projected onto the refined mesh using [texrecon](https://github.com/nmoehrle/mvs-texturing) (`mvs_workspace/sparse_scaled/textured_output.obj`).
+
+**Key outputs:**
+
+| Path | Description |
+|------|-------------|
+| `mvs_workspace/scene_dense.ply` | Dense point cloud |
+| `mvs_workspace/mesh_poisson.ply` | Cropped and cleaned Poisson mesh |
+| `mvs_workspace/scene_mesh_refined.ply` | OpenMVS-refined mesh |
+| `mvs_workspace/sparse_scaled/textured_output.obj` | Final textured 3D model |
+
+MVS parameters (resolution, face count, texturing quality) are configured via the `mvs/` config group – see [`configs/README.md`](configs/README.md). Dense reconstruction is optional and can be disabled or re-run independently:
+
+```bash
+# Skip MVS (sparse only)
+python run_improved_pipeline.py --overrides mvs.enabled=false
+
+# Re-run MVS only
+python run_improved_pipeline.py --overrides reset=mvs_only
+
+# High-quality MVS
+python run_improved_pipeline.py --overrides mvs=high_quality
+```
 
 ### Visualization & Inspection
 
