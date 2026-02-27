@@ -247,5 +247,5 @@ After running the pipeline:
 ## See Also
 
 - Original notebook: `notebooks/improved_pipeline.ipynb`
-- Configuration documentation: `configs/README.md` (if available)
+- Configuration documentation: `configs/README.md`
 - HLOC documentation: Main README.md

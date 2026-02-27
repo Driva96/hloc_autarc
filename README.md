@@ -39,7 +39,7 @@ python run_improved_pipeline.py --overrides dataset=cunit reset=aggressive
 Colmap may create multiple models depending on the complexity of the scene. This can be fixed simply by selecting the biggest model reconstructed. A better approach should be found in future work
 
 ## Hydra Conf
-Allows for easy configuration via a json file. It allows setting via command as well and provides functionality to run multiple runs at once with different configurations. The latter helps for quality benchmarking. 
+Allows for easy configuration via YAML files. It allows setting via command line as well and provides functionality to run multiple runs at once with different configurations. The latter helps for quality benchmarking. 
 
 ## Pipeline 
 ### First Stage (Precursor - *A rough search*)
