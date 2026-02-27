@@ -136,6 +136,12 @@ The script generates the following outputs in the configured output directory:
 - `sfm_superpoint+lightglue/`: Stage 2 fine reconstruction
 - `sfm_superpoint+lightglue/geofenced/`: Geofenced sparse model (ready for Gaussian Splatting)
 
+  After geofencing, `pca_cylinder_geofence` writes a plain-text file `trainer_cylinder_args.txt` to the log directory next to the geofenced model. This file contains the ready-to-use command-line arguments for the Gaussian Splatting trainer:
+  ```
+  --cylinder_center "x,y,z" --cylinder_axis "nx,ny,nz" --cylinder_radius r
+  ```
+  Copy this line directly into your gsplat trainer command to constrain the scene to the reconstructed object.
+
 ### Masks and Resized Images
 - `{raw_images}/masks_geo/`: Geofencing masks at original resolution
 - `{raw_images}/resized/`: Resized images for Stage 2
@@ -155,6 +161,12 @@ The script generates the following outputs in the configured output directory:
 - `mvs_workspace/sparse_scaled/textured_output.obj`: Final textured mesh
 - `mvs_workspace/sparse_scaled/textured_output.mtl`: Material file
 - `mvs_workspace/sparse_scaled/textured_output_texture_*.png`: Texture images
+
+  **Texturing tool**: [texrecon](https://github.com/nmoehrle/mvs-texturing) is used to generate high-resolution textures. texrecon is a view-based, image-space tool — it does **not** hallucinate or invent texture. Where no camera has a direct line of sight to a surface patch, that patch is left untextured (visible as a grey or black area on the mesh).
+
+  **Future work — closing texture gaps**: Two approaches are under consideration:
+  - **AI texture completion**: Invoke a generative inpainting model to estimate plausible texture for the uncovered regions.
+  - **Mesh underlay**: Render the untextured mesh underneath the textured model, colouring its faces by interpolating adjacent texture colours so that gaps are filled without hallucinating detail.
 
 ## Reset Modes
 
