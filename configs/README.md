@@ -65,9 +65,12 @@ Configure coarse reconstruction parameters:
 
 Key parameters:
 - `coarse_max_img_size`: Maximum image dimension for downsampling
-- `camera_mode`: Camera model (AUTO, SINGLE, etc.)
-- `use_sequential_matcher`: Whether to use sequential or GPS-based matching
-- `num_pairs_gps`: Number of image pairs for GPS-based matching
+- `coarse_num_features`: Number of SIFT features to extract per image
+- `camera.mode`: Camera model (`PER_FOLDER` for single shared camera, `AUTO` for multiple cameras)
+- `matching.strategy`: Matching strategy (`spatial` uses GPS priors, `exhaustive` matches all pairs)
+- `matching.exhaustive_threshold`: Switch to exhaustive matching when image count is below this value
+- `gps_priors.std_xy` / `gps_priors.std_z`: GPS accuracy in meters (horizontal / vertical)
+- `mapper.max_runtime_seconds`: Maximum allowed COLMAP mapper runtime
 
 ### Stage 2 Configurations (`stage2/`)
 
@@ -77,9 +80,11 @@ Configure fine reconstruction parameters:
 - `exhaustive.yaml` - Exhaustive matching (slower but more thorough)
 
 Key parameters:
-- `extractor`: Feature extractor name (e.g., "superpoint_max")
-- `matcher`: Feature matcher name (e.g., "lightglue")
-- `num_pairs_from_poses`: Number of image pairs to match
+- `extractor`: Feature extractor name (e.g., `superpoint_max`, `disk`)
+- `matcher`: Feature matcher name (e.g., `lightglue`, `superglue`)
+- `pairs.mode`: Pairing strategy (`pose` uses Stage 1 camera positions, `exhaustive` matches all pairs)
+- `pairs.neighbors_to_match`: Number of nearest-pose neighbors to match per image (used when `pairs.mode=pose`)
+- `mapper.max_runtime_seconds`: Maximum allowed COLMAP mapper runtime
 
 ### Geofencing Configurations (`geofencing/`)
 
@@ -89,10 +94,10 @@ Configure 3D bounding box and masking:
 - `loose.yaml` - Looser bounding box (includes more context)
 
 Key parameters:
-- `silo_ratio`: Height-to-radius ratio for bounding box
-- `safety_margin_xy`: Horizontal safety margin
-- `safety_margin_z_above`: Vertical safety margin above
-- `safety_margin_z_below`: Vertical safety margin below
+- `silo_radius_ratio`: Fraction of the orbit radius used as the ROI cylinder radius (e.g. `0.78` keeps the inner 78 %)
+- `safety_margin`: Additional fractional margin added to the cylinder radius
+- `height_center_bias`: Vertical offset of the bounding-box centre relative to the object centre (negative = shift down)
+- `buffer_distance`: Extra buffer added around the bounding box in meters
 
 ### MVS Configurations (`mvs/`)
 
@@ -102,10 +107,13 @@ Configure dense reconstruction:
 - `high_quality.yaml` - Higher quality output
 
 Key parameters:
-- `enabled`: Whether to run dense reconstruction
-- `resolution_level`: Resolution level (0=highest, higher=faster)
-- `number_views`: Minimum number of views for a point
-- `fusion_mode`: Point cloud fusion mode
+- `densify.max_resolution` / `densify.min_resolution`: Image resolution range used during dense point cloud generation
+- `densify.sub_resolution_levels`: Number of sub-resolution levels to guide high-resolution densification
+- `densify.postprocess_dmaps`: Depth-map post-processing mode (`0`=disabled, `1`=remove speckles, `2`=fill gaps, `11`=fill gaps + remove speckles)
+- `densify.fusion_mode`: Point cloud fusion mode (`0`=depth-maps & fusion, `-1`=depth-maps only, `-2`=fuse disparity-maps)
+- `mesh.poisson_depth`: Poisson reconstruction depth (higher = more detail, slower)
+- `mesh.target_faces`: Target face count after mesh decimation
+- `texture.use_highres`: Whether to use the high-resolution image set for texturing
 
 ### Reset Configurations (`reset/`)
 
@@ -117,10 +125,13 @@ Control which stages are reset:
 - `mvs_only.yaml` - Reset only MVS outputs
 
 Key parameters:
-- `stage1`: Reset Stage 1 (coarse) outputs
-- `stage2`: Reset Stage 2 (fine) outputs
+- `stage_1`: Reset Stage 1 (coarse) outputs
+- `stage_2`: Reset Stage 2 (fine) outputs
+- `masks`: Reset geofencing masks
+- `resized`: Reset resized images and their masks
+- `features`: Reset extracted feature files
+- `matches`: Reset feature match files
 - `mvs`: Reset MVS outputs
-- `resized_images`: Reset resized images and masks
 
 ## Creating Custom Configurations
 

@@ -89,7 +89,10 @@ output/hloc/{experiment}/
 ├── pairs.txt                        # Image pairs
 └── mvs_workspace/                   # Dense reconstruction
     ├── scene_dense.ply              # Dense point cloud
-    └── scene_mesh.ply               # Reconstructed mesh
+    ├── mesh_poisson.ply             # Cropped and cleaned Poisson mesh
+    ├── scene_mesh_refined.ply       # OpenMVS-refined mesh
+    └── sparse_scaled/
+        └── textured_output.obj      # Final textured 3D model
 ```
 
 ## Documentation
@@ -109,5 +112,5 @@ For detailed documentation, see:
 
 After running the pipeline:
 1. Use `sfm_superpoint+lightglue/geofenced/` for Gaussian Splatting
-2. View dense results in `mvs_workspace/scene_dense.ply`
-3. Visualize with COLMAP GUI or original notebook
+2. View the dense point cloud in `mvs_workspace/scene_dense.ply`
+3. Visualize with [`notebooks/visualize.ipynb`](notebooks/visualize.ipynb) or the COLMAP GUI

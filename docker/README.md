@@ -4,6 +4,10 @@
 Current resulting image size is 12 GB.
 To decrease image size drastically we need to step away from PyTorch entirely.
 
+> **CPU-only build**: Omitting CUDA (building without GPU support) could drastically reduce the image size and may be sufficient for deployment on machines with modern, high-core-count CPUs. This has not been tested yet.
+
+> **Alternative BLAS vendors**: The `BLA_VENDOR` build argument controls which BLAS/LAPACK library is linked into COLMAP and OpenMVS. Switching to a CPU-vendor-specific implementation — for example [AMD BLIS / AOCL](https://developer.amd.com/amd-aocl/) for Ryzen CPUs — could improve linear-algebra performance. This has not been tested yet.
+
 ## Dockerfile.deploy
 
 `Dockerfile.deploy` is the production image used for deployment. It is a **multi-stage build** with three stages:
