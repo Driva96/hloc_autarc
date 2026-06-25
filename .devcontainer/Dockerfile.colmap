@@ -1,5 +1,6 @@
 ARG UBUNTU_VERSION=24.04
 ARG NVIDIA_CUDA_VERSION=12.9.1
+ARG BLA_VENDOR=Intel10_64lp
 #
 # Docker builder stage.
 #
@@ -10,12 +11,15 @@ ARG COLMAP_TAG=3.13.0
 ARG CUDA_ARCHITECTURES=all-major
 ARG PYTHON_VERSION=3.11
 ENV QT_XCB_GL_INTEGRATION=xcb_egl
+ARG BLA_VENDOR
 
 # Prevent stop building ubuntu at time zone selection.
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Prepare and empty machine for building.
-RUN apt-get update && \
+# Prepare and empty machine for building.
+RUN BLAS_DEV_PKG=$([ "${BLA_VENDOR}" = "Intel10_64lp" ] && echo "libmkl-full-dev" || echo "libopenblas-openmp-dev") && \
+    apt-get update && \
     apt-get install -y \
         git \
         cmake \
@@ -40,7 +44,7 @@ RUN apt-get update && \
         libceres-dev \
         libcurl4-openssl-dev \
         libssl-dev \
-        libmkl-full-dev
+        ${BLAS_DEV_PKG}
 
 # COLMAP atm uses CGAL 6.0.1 if want to switch to just one install of CGAL for MVS and COLMAP switch to below
 # RUN git clone https://github.com/cgal/cgal --branch=v5.6.3 && \
@@ -64,7 +68,7 @@ RUN cd colmap && \
         -GNinja \
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES} \
         -DCMAKE_INSTALL_PREFIX=/colmap-install \
-        -DBLA_VENDOR=Intel10_64lp && \
+        -DBLA_VENDOR=${BLA_VENDOR} && \
     ninja install
 
 # Install Pycolmap and save as a wheel    

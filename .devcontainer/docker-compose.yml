@@ -2,13 +2,13 @@ services:
   hloc:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.deploy #.devcontainer/Dockerfile
-    image: hloc_deploy:latest
+      dockerfile: .devcontainer/Dockerfile #docker/Dockerfile.deploy or .devcontainer/Dockerfile 
+    image: hloc:dev # hloc_deploy:latest or hloc:dev
     shm_size: '24gb'  # Increase this value as needed
-    container_name: hloc_deploy
+    container_name: hloc_dev # hloc_deploy or hloc_dev  
     volumes:
       - ..:/hloc
-      - /data/autarc:/data:cached
+      - /mnt/e/data/autarc:/data:cached #/data/autarc:/data:cached
     working_dir: /hloc
     tty: true
     stdin_open: true

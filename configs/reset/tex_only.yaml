@@ -5,5 +5,5 @@ masks: false
 resized: false
 features: false
 matches: false
-mvs: true
+mvs: false
 texturing: true

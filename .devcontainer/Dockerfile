@@ -76,8 +76,20 @@ RUN python -m pip install --upgrade pip
 
 COPY requirements.txt /app/requirements.txt
 
-# Install Pytorch
-RUN python -m pip install --extra-index-url https://download.pytorch.org/whl/cu129 -r requirements.txt --no-build-isolation
+# Install PyTorch
+# RUN python -m pip install --extra-index-url https://download.pytorch.org/whl/cu129 -r requirements.txt --no-build-isolation
+RUN apt-get update &&\ 
+    python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu126 \
+    torch torchvision && \
+    python -m pip install --no-cache-dir -r requirements.txt && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python - <<'EOF'
+import torch
+print("Torch CUDA version:", torch.version.cuda)
+print("Torch CUDA available:", torch.cuda.is_available())
+EOF
 
 # Install PyColmap
 # RUN python -m pip install pycolmap
@@ -144,11 +156,53 @@ RUN git clone https://github.com/cgal/cgal --branch=v6.0.1 && \
 RUN apt-get update && apt-get install -y \
     qt6-base-dev qt6-tools-dev libqt6opengl6-dev
 
+RUN git clone https://github.com/leethomason/tinyxml2.git /tinyxml2 && \
+    cd /tinyxml2 && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -Dtinyxml2_SHARED_LIBS=ON && \
+    cmake --build . -j$(nproc) && \
+    cmake --install . && \
+    rm -rf /tinyxml2
+
+# Install TinyEXIF (manual build + install to /usr/local)
+RUN git clone --depth 1 https://github.com/cdcseacave/TinyEXIF.git /tinyexif && \
+    mkdir -p /tinyexif/build && cd /tinyexif/build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DTinyXML2_DIR=/usr/local/lib/cmake/TinyXML2 && \
+    cmake --build . -j$(nproc) && \
+    cmake --install . && \
+    rm -rf /tinyexif
+
+# add to deps list above 
+RUN apt-get install -y \
+    libboost-exception-dev \
+    libgoogle-glog-dev  
+
+RUN git clone https://github.com/cdcseacave/TinyNPY.git /tinynpy && \
+    cd /tinynpy && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON && \
+    cmake --build . -j$(nproc) && \
+    cmake --install . && \
+    rm -rf /tinynpy
+
+RUN git clone --recursive https://github.com/vlarsson/PoseLib.git /poselib && \
+    cd /poselib && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON && \
+    cmake --build . -j$(nproc) && \
+    cmake --install . && \
+    rm -rf /poselib
+
+RUN git clone --recurse-submodules https://ceres-solver.googlesource.com/ceres-solver && \
+    mkdir ceres-build && cd ceres-build && \
+    cmake ../ceres-solver -DEIGEN_INCLUDE_DIR=/usr/local/include/eigen3 -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release  && \
+    make -j$(nproc) && make install
+
 # === OpenMVS === #
 RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develop && \
     cd /openMVS && \
-    # git fetch https://github.com/cdcseacave/openMVS.git 973a37b2e9f417a80696a1d93994e636078587aa &&\
-    # git checkout FETCH_HEAD &&\
+    git fetch https://github.com/cdcseacave/openMVS.git 973a37b2e9f417a80696a1d93994e636078587aa &&\
+    git checkout FETCH_HEAD &&\
     git submodule update --init --recursive && \
     # ENABLED: Compatibility fixes
     sed -i 's/IMWRITE_JPEGXL_QUALITY/IMWRITE_JPEG_QUALITY/g' /openMVS/libs/Common/Types.inl && \
@@ -157,7 +211,17 @@ RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develo
     #sed -i 's/AABB_triangle_primitive_3.h/AABB_triangle_primitive.h/g' /openMVS/libs/MVS/SceneReconstruct.cpp && \
     rm -rf openMVS_build && mkdir openMVS_build && \
     cd openMVS_build && \
-    cmake -S .. -B . -DOpenMVS_USE_QT=ON -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/vcglib $OPENMVS_BUILD_ARG -DCGAL_DIR=/opt/cgal6/lib/cmake/CGAL && \
+    cmake -S .. -B . \
+        -DOpenMVS_MAX_CUDA_COMPATIBILITY=ON \
+        -DBLA_VENDOR=Intel10_64lp \
+        -DCMAKE_CUDA_ARCHITECTURES=61 \
+        -DOpenMVS_USE_QT=ON \
+        -DQt6_DIR=/usr/lib/x86_64-linux-gnu/cmake/Qt6 \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DVCG_ROOT=/vcglib \
+        $OPENMVS_BUILD_ARG \
+        -DCGAL_DIR=/opt/cgal6/lib/cmake/CGAL \
+        -DTinyEXIF_DIR=/usr/local/lib/cmake/TinyEXIF && \
     cmake --build . -j4 --config Release && \
     cmake --install . && \
     cd .. && rm -rf openMVS_build /vcglib
@@ -167,7 +231,8 @@ RUN git clone https://github.com/cdcseacave/openMVS.git /openMVS --branch=develo
 RUN apt-get update && apt-get install -y \
     libtbb-dev 
 
-RUN git clone https://github.com/nmoehrle/mvs-texturing.git /mvs-texturing && \
+ RUN git clone https://github.com/Driva96/mvs-texturing.git /mvs-texturing && \
+    sed -i 's/unsigned int padding = size >> 7;/unsigned int padding = size >> 8;/g' /mvs-texturing/libs/tex/generate_texture_atlases.cpp &&\
     cd /mvs-texturing && \
     mkdir build && cd build && \
     cmake -S .. -B . -DCMAKE_BUILD_TYPE=Release && \

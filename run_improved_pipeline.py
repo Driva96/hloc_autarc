@@ -709,7 +709,7 @@ def main(config_name="config", overrides=None):
         # OpenMVS expects undistorted pinhole images.
         undistorted_path = paths["mvs_root"] / "images"
         
-        if not undistorted_path.exists() or not list(undistorted_path.glob("*.jpg")):
+        if not undistorted_path.exists() or not list(undistorted_path.glob("*.[jJ][pP][gG]")):
             logger.info("Undistorting images for MVS...")
             pycolmap.undistort_images(
                 paths["mvs_root"], 
@@ -746,7 +746,7 @@ def main(config_name="config", overrides=None):
         model.write(scaled_model_path)
 
         # Undistort Original High-Res Images
-        if not (scaled_model_path / "images").exists() or not list((scaled_model_path / "images").glob("*.jpg")):
+        if not (scaled_model_path / "images").exists() or not list((scaled_model_path / "images").glob("*.[jJ][pP][gG]")):
             logger.info("Undistorting high-res images...")
             pycolmap.undistort_images(
                 scaled_model_path, 
@@ -984,7 +984,7 @@ def main(config_name="config", overrides=None):
             logger.info("Fixed NVM file already exists")
         
         # 10. Reset Final Outputs Check
-        RESET_FINAL = Config.reset.mvs
+        RESET_FINAL = Config.reset.texturing
 
         if Config.reset.all or RESET_FINAL:
             target_files = list(scaled_model_path.glob("textured_output*"))
@@ -1008,7 +1008,9 @@ def main(config_name="config", overrides=None):
                 "sfm_model_fixed.nvm",
                 "meshed_model_decimated.ply",
                 "textured_output",
-                "--outlier_removal=gauss_clamping"
+                "--outlier_removal=gauss_clamping",
+                "--keep_unseen_faces",
+                "--num_threads="+str(os.cpu_count() if os.cpu_count() is not None else 8),
             ]
 
             with OpenMVSEnv(Config.mvs.openmvs_bin) as my_env:    
