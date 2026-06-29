@@ -8,6 +8,8 @@ densify:
   fusion_mode: 0  # 0=depth-maps & fusion (default), -1=depth-maps only, -2=fuse disparity-maps
 
 mesh:
+  use_delaunay: false
+  use_open3d: false
   poisson_depth: 11
   preclean: true
   threads: null

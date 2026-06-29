@@ -30,6 +30,8 @@ import numpy as np
 import cv2
 from PIL import Image
 import pycolmap
+import open3d as o3d
+import open3d.core as o3c
 
 # HLOC Imports
 from hloc import (
@@ -792,28 +794,91 @@ def main(config_name="config", overrides=None):
         else:
             logger.info("Dense point cloud already exists")
         
-        # 4. Meshing with PyMeshLab
+        # 4. Meshing
         mesh_uncropped = paths["mvs_root"] / "scene_mesh_uncropped.ply"
-        
-        if not mesh_uncropped.exists():
-            logger.info("Running Poisson Surface Reconstruction with PyMeshLab...")
-            import pymeshlab
-            
-            num_threads = os.cpu_count() if os.cpu_count() is not None else 8
-            ms = pymeshlab.MeshSet()
-            ms.load_new_mesh(str((paths["mvs_root"] / "scene_dense.ply").resolve()))
 
-            logger.info("Running Poisson Surface Reconstruction...")
-            ms.generate_surface_reconstruction_screened_poisson(
-                depth=Config.mvs.mesh.poisson_depth, 
-                preclean=True, 
-                confidence=False, 
-                pointweight=Config.mvs.mesh.poisson_pointweight,
-                threads=num_threads
-            )
+        use_delaunay = getattr(Config.mvs.mesh, 'use_delaunay', False)
+        use_open3d = getattr(Config.mvs.mesh, 'use_open3d', False)
+
+        if not mesh_uncropped.exists():
             
-            ms.save_current_mesh(str(mesh_uncropped.resolve()))
-            logger.info(f"✅ Uncropped mesh saved: {mesh_uncropped}")
+            # ==========================================
+            # PATH A: OPEN3D
+            # ==========================================
+            if use_open3d:
+                import open3d as o3d
+                import numpy as np
+                
+                logger.info("Loading point cloud using Open3D (CPU)...")
+                pcd = o3d.io.read_point_cloud(str((paths["mvs_root"] / "scene_dense.ply").resolve()))
+                
+                # Safety check: Ensure normals exist for meshing
+                if not pcd.has_normals():
+                    logger.info("Estimating normals...")
+                    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+                
+                if use_delaunay:
+                    logger.info("Running Alpha Shape (Delaunay) Reconstruction with Open3D...")
+                    # Alpha controls how tight the mesh wraps the points. 
+                    # Smaller = tighter (more holes). Larger = smoother/convex hull.
+                    alpha = getattr(Config.mvs.mesh, 'alpha_shape', 0.05) 
+                    mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha)
+                    
+                    mesh.compute_vertex_normals()
+                    o3d.io.write_triangle_mesh(str(mesh_uncropped.resolve()), mesh)
+                    logger.info(f"✅ Uncropped Open3D Delaunay (Alpha Shape) mesh saved: {mesh_uncropped}")
+                
+                else:
+                    logger.info("Running Poisson Surface Reconstruction with Open3D...")
+                    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                        pcd, depth=Config.mvs.mesh.poisson_depth
+                    )
+                    
+                    # Store densities in vertex colors for Step 5 (Skirt Removal)
+                    densities = np.asarray(densities)
+                    # Normalize density to 0.0 - 1.0 for valid PLY color saving
+                    densities_norm = (densities - densities.min()) / (densities.max() - densities.min())
+                    density_colors = np.repeat(densities_norm[:, np.newaxis], 3, axis=1)
+                    mesh.vertex_colors = o3d.utility.Vector3dVector(density_colors)
+                    
+                    o3d.io.write_triangle_mesh(str(mesh_uncropped.resolve()), mesh)
+                    logger.info(f"✅ Uncropped Open3D Poisson mesh saved: {mesh_uncropped}")
+
+            # ==========================================
+            # PATH B: OPENMVS / PYMESHLAB
+            # ==========================================
+            else:
+                if use_delaunay:
+                    logger.info("Running Delaunay Surface Reconstruction with OpenMVS...")
+                    with OpenMVSEnv(Config.mvs.openmvs_bin) as env:
+                        run_cmd([
+                            "ReconstructMesh",
+                            "scene_dense.mvs",
+                            "-o", str(mesh_uncropped.name), # Save directly as PLY
+                            "--thickness-factor", "2.0",    # Tuning parameter for Delaunay completeness
+                            "--threads", str(os.cpu_count() or 8)
+                        ], cwd=paths["mvs_root"], env=env)
+                    logger.info(f"✅ Uncropped OpenMVS Delaunay mesh saved: {mesh_uncropped}")
+                
+                else:
+                    logger.info("Running Poisson Surface Reconstruction with PyMeshLab...")
+                    import pymeshlab
+                    
+                    num_threads = os.cpu_count() if os.cpu_count() is not None else 8
+                    ms = pymeshlab.MeshSet()
+                    ms.load_new_mesh(str((paths["mvs_root"] / "scene_dense.ply").resolve()))
+
+                    ms.generate_surface_reconstruction_screened_poisson(
+                        depth=Config.mvs.mesh.poisson_depth, 
+                        preclean=True, 
+                        confidence=False, 
+                        pointweight=Config.mvs.mesh.poisson_pointweight,
+                        threads=num_threads
+                    )
+                    
+                    ms.save_current_mesh(str(mesh_uncropped.resolve()))
+                    logger.info(f"✅ Uncropped PyMeshLab Poisson mesh saved: {mesh_uncropped}")
+        
         else:
             logger.info("Uncropped mesh already exists")
         
@@ -822,6 +887,19 @@ def main(config_name="config", overrides=None):
         
         if not mesh_poisson.exists():
             logger.info("Cropping Mesh to Geofence...")
+            if use_open3d:
+                mesh = o3d.io.read_triangle_mesh(str(mesh_uncropped.resolve()))
+    
+                # A. Remove Poisson "Skirt" using Density (Much more robust than edge-length!)
+                if not use_delaunay and mesh.has_vertex_colors():
+                    logger.info("Removing Poisson Skirt via Density Filtering...")
+                    densities = np.asarray(mesh.vertex_colors)[:, 0] # Extract density
+                    density_threshold = np.quantile(densities, 0.05) # Remove the 5% least dense vertices
+                    
+                    vertices_to_keep = densities > density_threshold
+                    mesh.remove_vertices_by_mask(vertices_to_keep == False)
+                    o3d.io.write_triangle_mesh(str(mesh_uncropped.resolve()), mesh)
+
             import pymeshlab
             
             ms = pymeshlab.MeshSet()
