@@ -805,8 +805,6 @@ def main(config_name="config", overrides=None):
             # ==========================================
             if use_open3d:
                 import open3d as o3d
-                import open3d.core as o3c
-                import numpy as np
                 
                 logger.info("Loading point cloud using Open3D (CPU)...")
                 pcd = o3d.io.read_point_cloud(str((paths["mvs_root"] / "scene_dense.ply").resolve()))
@@ -855,7 +853,8 @@ def main(config_name="config", overrides=None):
                             "scene_dense.mvs",
                             "-o", str(mesh_uncropped.name), # Save directly as PLY
                             "--thickness-factor", "2.0",    # Tuning parameter for Delaunay completeness
-                            "--threads", str(os.cpu_count() or 8)
+                            "--max-threads", str(os.cpu_count() or 8),
+                            "--cuda-device", "-1" # Use best available GPU, or -2 for CPU
                         ], cwd=paths["mvs_root"], env=env)
                     logger.info(f"✅ Uncropped OpenMVS Delaunay mesh saved: {mesh_uncropped}")
                 

@@ -81,6 +81,7 @@ COPY requirements.txt /app/requirements.txt
 RUN apt-get update &&\ 
     python -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu126 \
     torch torchvision && \
+    apt-get remove -y python3-jwt python3-blinker  &&\
     python -m pip install --no-cache-dir -r requirements.txt && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*

@@ -8,7 +8,7 @@ services:
     container_name: hloc_dev # hloc_deploy or hloc_dev  
     volumes:
       - ..:/hloc
-      - /mnt/e/data/autarc:/data:cached #/data/autarc:/data:cached
+      - /data/autarc:/data:cached # /mnt/e/data/autarc:/data:cached (home pc)
     working_dir: /hloc
     tty: true
     stdin_open: true
