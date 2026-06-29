@@ -30,8 +30,6 @@ import numpy as np
 import cv2
 from PIL import Image
 import pycolmap
-import open3d as o3d
-import open3d.core as o3c
 
 # HLOC Imports
 from hloc import (
@@ -807,6 +805,7 @@ def main(config_name="config", overrides=None):
             # ==========================================
             if use_open3d:
                 import open3d as o3d
+                import open3d.core as o3c
                 import numpy as np
                 
                 logger.info("Loading point cloud using Open3D (CPU)...")
@@ -888,6 +887,7 @@ def main(config_name="config", overrides=None):
         if not mesh_poisson.exists():
             logger.info("Cropping Mesh to Geofence...")
             if use_open3d:
+                import open3d as o3d
                 mesh = o3d.io.read_triangle_mesh(str(mesh_uncropped.resolve()))
     
                 # A. Remove Poisson "Skirt" using Density (Much more robust than edge-length!)
