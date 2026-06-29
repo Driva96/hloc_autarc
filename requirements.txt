@@ -5,6 +5,7 @@
 # essential libraries
 numpy
 opencv-python
+open3d
 tqdm>=4.36.0
 matplotlib
 plotly
