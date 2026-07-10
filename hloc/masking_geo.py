@@ -42,7 +42,7 @@ def is_camera_inside_box(cam_center, corners, method, rotation_matrix=None, mean
     
     return False
 
-def get_safe_2d_projection(img, camera, corners_world):
+def get_safe_2d_projection(img, camera, corners_world, max_pixel_margin=5000):
     """
     Projects 3D box corners to 2D by clipping edges against the camera's near plane.
     Returns a list of 2D points (N, 2) to be wrapped in a Convex Hull.
@@ -66,7 +66,7 @@ def get_safe_2d_projection(img, camera, corners_world):
     ]
 
     valid_cam_points = []
-    near_z = 0.01  # Meters. Keep this small but positive.
+    near_z = 0.1  # Meters. Keep this small but positive.
 
     for (i1, i2) in edges_indices:
         p1 = pts_cam[i1]
@@ -107,10 +107,13 @@ def get_safe_2d_projection(img, camera, corners_world):
     if len(valid_cam_points) == 0:
         return np.empty((0, 2))
 
-    valid_cam_points = np.array(valid_cam_points)
+    valid_cam_points = np.unique(np.array(valid_cam_points), axis=0)
 
     # 3. Project from Camera Space to Image Space
     points_2d = []
+
+    # Image boundaries for safety filtering
+    w, h = camera.width, camera.height
     
     for pc in valid_cam_points:
         # Normalize: (x/z, y/z)
@@ -118,7 +121,14 @@ def get_safe_2d_projection(img, camera, corners_world):
         
         # Apply intrinsics (Pycolmap handles distortion models here)
         uv = camera.img_from_cam(norm_xy)
-        points_2d.append(uv)
+    
+        # 5. Safety Filter: Check for NaNs or Extreme Values
+        # If the point is 5000+ pixels off-screen, it's likely a numerical artifact 
+        # of being too close to the near plane and will mess up the Convex Hull.
+        if np.all(np.isfinite(uv)):
+            if (-max_pixel_margin < uv[0] < w + max_pixel_margin and 
+                -max_pixel_margin < uv[1] < h + max_pixel_margin):
+                points_2d.append(uv)
         
     return np.array(points_2d)
 

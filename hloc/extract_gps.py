@@ -47,7 +47,7 @@ def get_gps_from_image(image_path):
     return None
 
 # --- 2. Database Injection using PyCOLMAP API ---
-def populate_priors(database_path, image_dir, sys=pycolmap.PosePriorCoordinateSystem.WGS84):
+def populate_priors(database_path, image_dir, sys=pycolmap.PosePriorCoordinateSystem.WGS84, radius_threshold=200.0):
     if not os.path.exists(database_path):
         raise FileNotFoundError(f"Database file not found: {database_path}")
 
@@ -65,19 +65,54 @@ def populate_priors(database_path, image_dir, sys=pycolmap.PosePriorCoordinateSy
         
         print(f"Found {len(db_images)} images. Starting GPS extraction...")
 
-        gps = {}
+        raw_gps_data = {}
         for img in db_images:
             image_path = os.path.join(image_dir, img.name)
             
             if not os.path.exists(image_path):
                 continue
+            
+            # Extract GPS. Ensure it handles cases where GPS is missing (returns None)
+            coords = get_gps_from_image(image_path)
+            if coords is not None:
+                raw_gps_data[img.image_id] = coords
+        
+        # +++ ADDED: Validation, ECEF conversion, Median calculation, and Distance filtering +++
+        if not raw_gps_data:
+            print("No valid GPS data found in any images.")
+            return
 
-            gps[img.image_id] = get_gps_from_image(image_path)
+        print("Converting to ECEF to calculate distances...")
+        ecef_positions = {}
+        for img_id, (lat, lon, alt) in raw_gps_data.items():
+            lla_input = np.array([[lat, lon, alt]], dtype=np.float64)
+            # Convert LLA to ECEF (X, Y, Z in meters) to calculate real-world distances
+            ecef_res = gps_transform.ellipsoid_to_ecef(lla_input)
+            ecef_positions[img_id] = ecef_res[0]  # Extract the first (and only) row
+        
+        # Calculate Median Position (using median is robust against extreme GPS outliers)
+        all_ecef_values = np.array(list(ecef_positions.values()))
+        median_ecef = np.median(all_ecef_values, axis=0)
+
+        # Filter images by a 200m radius
+        filtered_gps = {}
+        radius_threshold = radius_threshold  # meters
+        
+        for img_id, pos_ecef in ecef_positions.items():
+            # Calculate distance in meters from the median
+            distance = np.linalg.norm(pos_ecef - median_ecef)
+            if distance <= radius_threshold:
+                filtered_gps[img_id] = raw_gps_data[img_id]
+            else:
+                print(f"Skipping Image #{img_id}: Outlier detected ({distance:.2f}m from median)")
+
+        print(f"Kept {len(filtered_gps)}/{len(raw_gps_data)} images within {radius_threshold}m radius.")
+        # +++ END ADDED +++
         
         # Pick the Reference Datum (The Local Origin)
         # We use the first image found as (0, 0, 0)
-        ref_id = next(iter(gps))
-        ref_lat, ref_lon, ref_alt = gps[ref_id]
+        ref_id = next(iter(filtered_gps))
+        ref_lat, ref_lon, ref_alt = filtered_gps[ref_id]
         print(f"Ref Point set to Image #{ref_id}: Lat={ref_lat:.6f}, Lon={ref_lon:.6f}, Alt={ref_alt:.2f}")
 
         # Use the exposed Transaction wrapper for speed
@@ -87,10 +122,10 @@ def populate_priors(database_path, image_dir, sys=pycolmap.PosePriorCoordinateSy
 
             for img in db_images:
                 
-                if gps[img.image_id] is None:
+                if filtered_gps.get(img.image_id) is None:
                     continue
 
-                lat, lon, alt = gps[img.image_id]
+                lat, lon, alt = filtered_gps[img.image_id]
                 position = None # Placeholder for position vector
                 if sys == pycolmap.PosePriorCoordinateSystem.WGS84:
                     # Pass raw Lat, Lon, Alt.

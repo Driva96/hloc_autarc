@@ -202,7 +202,8 @@ def main(config_name="config", overrides=None):
     output_root.mkdir(parents=True, exist_ok=True)
 
     # Enable file logging (default path if not provided)
-    file_log_path = Path(Config.log_file) if hasattr(Config, "log_file") else (output_root / "pipeline.log")
+    logging_root = Path.cwd () if hasattr(Config, "logging") and hasattr(Config.logging, "directory") and Config.logging.directory=="cwd" else output_root
+    file_log_path = logging_root / Config.logging.log_file if hasattr(Config, "logging") and hasattr(Config.logging, "log_file") else (logging_root / "pipeline.log")
     configure_logging(log_file=file_log_path, level=Config.logging.level)
     
     # Get fine_max_img_size from extractor config
@@ -391,6 +392,7 @@ def main(config_name="config", overrides=None):
             "--image_path", str(raw_images_path),
             "--output_path", str(paths["coarse_sfm"]),
             "--Mapper.max_runtime_seconds", str(Config.stage1.mapper.max_runtime_seconds),  # 5 minutes
+            "--Mapper.ba_use_gpu", "1",  # Use GPU for bundle adjustment
             "--prior_position_std_x", str(Config.stage1.gps_priors.std_xy),
             "--prior_position_std_y", str(Config.stage1.gps_priors.std_xy),
             "--prior_position_std_z", str(Config.stage1.gps_priors.std_z),
@@ -423,9 +425,64 @@ def main(config_name="config", overrides=None):
     
     logger.info(f"Best Coarse Model found at {best_model_dir} with {max_reg_images} registered images")
     
-    # Use best_model_dir.name for accessing the model directory
-    coarse_model_path = best_model_dir
+    coarse_model_path = best_model_dir # placeholder for now, may be updated if we do extended mapping
+    best_model = pycolmap.Reconstruction(best_model_dir)
+
+    # Try register unreconstructed images 
+    # convert best model images into a list 
+    coarse_model_images = [img.name for img in best_model.images.values()]
+    unregistered_images = [img for img in images_list if img not in coarse_model_images]
+
     
+    # exhaustive match unregistered images to the coarse model
+    if unregistered_images:
+        logger.info(f"Attempting to rescue {len(unregistered_images)} unregistered images...")
+
+        # --- CHANGE 1: GENERATE EXHAUSTIVE PAIRS FOR NEW IMAGES ---
+        # We create a list pairing every unregistered image with EVERY image in the dataset
+        # Can be used with hloc matching if extra performance needed
+        """ rescue_pairs_path = best_model_dir / "rescue_pairs.txt"
+        with open(rescue_pairs_path, "w") as f:
+            for new_img in unregistered_images:
+                for any_img in images_list:
+                    if new_img != any_img:
+                        f.write(f"{new_img} {any_img}\n") """
+        
+        # --- CHANGE 2: USE PAIRS_LIST_MATCHER INSTEAD OF VOCAB_TREE ---
+        # Super fast exhaustive matching for unregistered images against the coarse model
+        match_cmd = [
+            "colmap", "exhaustive_matcher",
+            "--database_path", str(paths["coarse_db"]),
+            "--FeatureMatching.use_gpu", "1",
+        ]
+        logger.info("Running exhaustive matching for unregistered images via pairs list...")
+        run_cmd(match_cmd)
+
+        # continue mapping
+        (best_model_dir.parent/"extended_mapper").mkdir(parents=True, exist_ok=True)
+        cmd = ["colmap", "mapper",
+            "--database_path", str(paths["coarse_db"]),
+            "--image_path", str(raw_images_path),
+            "--input_path", str(best_model_dir),
+            "--output_path", str(best_model_dir.parent/"extended_mapper"),
+            "--Mapper.fix_existing_frames", "1",  # Keep existing registered images fixed
+            "--Mapper.ba_use_gpu", "1",  # Use GPU for bundle adjustment
+            "--Mapper.max_runtime_seconds", str(int(Config.stage1.mapper.max_runtime_seconds/2)), # half as much as above  
+        ]
+        logging.info("Running extended mapping to register unregistered images...")
+        run_cmd(cmd)
+        try:
+            model = pycolmap.Reconstruction(best_model_dir.parent/"extended_mapper")
+            num_reg_images = len(model.images)
+        except Exception as e:
+            logger.error(f"Error occurred while loading reconstruction: {e}")
+        else: 
+            logger.info(f"Extended model has {num_reg_images} registered images vs. {max_reg_images} in original coarse model")
+            coarse_model_path = best_model_dir.parent/"extended_mapper"
+    else:
+        # Use best_model_dir.name for accessing the model directory
+        coarse_model_path = best_model_dir
+
     # ---------------------------------------------------------------------------
     # 4. GEOFENCING: Generate 3D Bounding Box and 2D Masks
     # ---------------------------------------------------------------------------
@@ -435,7 +492,7 @@ def main(config_name="config", overrides=None):
     
     # 1. Load Coarse Model
     # This model was built using the Raw Images, so its cameras have full resolution intrinsics.
-    coarse_model = pycolmap.Reconstruction(best_model_dir)
+    coarse_model = pycolmap.Reconstruction(coarse_model_path)
 
     # 2. Calculate Adaptive Bounding Box
     bbox_min, bbox_max = geofencing.compute_adaptive_geofence(
@@ -469,6 +526,15 @@ def main(config_name="config", overrides=None):
             for file in nested_folder.iterdir():
                 shutil.move(str(file), str(paths["raw_masks"]))
             nested_folder.rmdir()
+
+        # --- Create dummy masks for any missing/unreconstructed images ---
+        for img_name in images_list:
+            mask_path = paths["raw_masks"] / f"{Path(img_name).stem}.png"
+            if not mask_path.exists():
+                logger.warning(f"Mask for {img_name} not found. Creating dummy mask (all white).")
+                img = read_image(raw_images_path / img_name)
+                dummy_mask = np.ones_like(img, dtype=np.uint8) * 255
+                cv2.imwrite(str(mask_path), dummy_mask)
             
         logger.info("Mask generation complete.")
     else:
@@ -625,7 +691,7 @@ def main(config_name="config", overrides=None):
             triangulation.estimation_and_geometric_verification(paths["fine_db"], paths["pairs"])
         
         # Re-inject GPS Priors (using original image metadata)
-        extract_gps.populate_priors(paths["fine_db"], raw_images_path)
+        extract_gps.populate_priors(paths["fine_db"], raw_images_path, radius_threshold=Config.stage1.gps_priors.radius_threshold)
         
         # Run Mapper with Priors
         logger.info("Running Fine Mapper...")
@@ -854,7 +920,8 @@ def main(config_name="config", overrides=None):
                             "-o", str(mesh_uncropped.name), # Save directly as PLY
                             "--thickness-factor", "2.0",    # Tuning parameter for Delaunay completeness
                             "--max-threads", str(os.cpu_count() or 8),
-                            "--cuda-device", "-1" # Use best available GPU, or -2 for CPU
+                            "--cuda-device", "-1", # Use best available GPU, or -2 for CPU
+                            "--crop-to-roi", "0"
                         ], cwd=paths["mvs_root"], env=env)
                     logger.info(f"✅ Uncropped OpenMVS Delaunay mesh saved: {mesh_uncropped}")
                 
@@ -938,7 +1005,10 @@ def main(config_name="config", overrides=None):
             ms.meshing_remove_unreferenced_vertices()
 
             logger.info("Closing Holes...")
-            ms.meshing_close_holes(maxholesize=Config.mvs.mesh.max_hole_size)
+            try:
+                ms.meshing_close_holes(maxholesize=Config.mvs.mesh.max_hole_size)
+            except pymeshlab.pmeshlab.PyMeshLabException as e:
+                logger.warning(f"Error occurred while closing holes: {e}")
 
             logger.info("Simplifying Mesh...")
             logger.info(f"Number of faces before simplification: {ms.current_mesh().face_number()}, target: 400,000")

@@ -11,6 +11,8 @@ output_root: ${dataset.root}/output/hloc/${dataset.experiment}
 
 logging:
   level: INFO
+  log_file: pipeline.log
+  directory: cwd 
 
 mvs:
   enabled: true

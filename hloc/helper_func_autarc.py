@@ -4,10 +4,77 @@ import numpy as np
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 import pycolmap
+from pathlib import Path
+import sqlite3
+import h5py
+
+
+# =================
+# === COLMAP DB to HLOC Features Export ===
+# =================
+def export_colmap_db_to_hloc_h5(
+    db_path: Path, output_h5_path: Path
+) -> Path:
+    """Exports keypoints and descriptors from a COLMAP database.db into an HLOC-compatible features.h5 file."""
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # 1. Fetch mapping: image_id -> image_name
+    cursor.execute("SELECT image_id, name FROM images")
+    images = {row[0]: row[1] for row in cursor.fetchall()}
+
+    output_h5_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(output_h5_path, "w") as h5f:
+        for image_id, image_name in images.items():
+            # 2. Extract Keypoints
+            cursor.execute(
+                "SELECT rows, cols, data FROM keypoints WHERE image_id = ?",
+                (image_id,),
+            )
+            kp_row = cursor.fetchone()
+
+            if kp_row is None:
+                continue
+
+            kp_rows, kp_cols, kp_data = kp_row
+            # COLMAP stores keypoints as float32 array (N, 2 or N, 4)
+            keypoints = np.frombuffer(kp_data, dtype=np.float32).reshape(
+                (kp_rows, kp_cols)
+            )
+            xy = (
+                keypoints[:, :2] - 0.5
+            )  # Remove COLMAP 0.5 pixel offset for HLOC
+
+            # 3. Extract Descriptors
+            cursor.execute(
+                "SELECT rows, cols, data FROM descriptors WHERE image_id = ?",
+                (image_id,),
+            )
+            desc_row = cursor.fetchone()
+
+            # Create group for image name (HLOC uses relative image path as key)
+            grp = h5f.create_group(image_name)
+            grp.create_dataset("keypoints", data=xy.astype(np.float32))
+
+            if desc_row is not None:
+                d_rows, d_cols, d_data = desc_row
+                # SIFT descriptors in COLMAP are uint8 of shape (N, 128)
+                descriptors = np.frombuffer(d_data, dtype=np.uint8).reshape(
+                    (d_rows, d_cols)
+                )
+
+                # HLOC expects descriptors in shape (D, N) as float32
+                grp.create_dataset(
+                    "descriptors", data=descriptors.T.astype(np.float32)
+                )
+
+    conn.close()
+    return output_h5_path
 
 
 # ==================
-# === Pose Pior ====
+# === Pose Priors ===
 # ==================
  
 def get_gps_from_image(image_path):

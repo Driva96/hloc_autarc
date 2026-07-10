@@ -3,11 +3,12 @@ coarse_num_features: 2048
 
 gps_priors:
   std_xy: 2.0
-  std_z: 3.0
+  std_z: 5.0
+  radius_threshold: 200.0  # meters
 
 matching:
   strategy: "spatial"
-  exhaustive_threshold: 60
+  exhaustive_threshold: 30 #60
 
 mapper:
   max_runtime_seconds: 300
