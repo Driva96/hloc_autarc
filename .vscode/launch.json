@@ -16,7 +16,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/run_improved_pipeline.py",
-            "args": ["--overrides", "dataset=siedlung", "reset=aggressive"],
+            "args": ["--overrides", "dataset=shortcut", "reset=aggressive"],
             "console": "integratedTerminal"
         }
     ]

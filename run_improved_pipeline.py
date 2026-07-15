@@ -339,12 +339,33 @@ def main(config_name="config", overrides=None):
             device="cuda"
         )
 
-        # 2. Match (Sequential/Spatial is usually enough for a sequence)
-        logger.info("Starting Coarse Matching...")
         num_images: int = 0
         with pycolmap.Database.open(paths["coarse_db"]) as db:
             num_images = db.num_images()
+        missing = len(images_list) - num_images
+        
+        if missing > 0:
+            logger.warning(f"⚠️  {missing} images were not processed during feature extraction. Will try to process them again using AUTO camera mode.")
+            pycolmap.extract_features(
+            paths["coarse_db"], 
+            image_path=raw_images_path, 
+            image_names=images_list,
+            camera_model="SIMPLE_RADIAL", 
+            camera_mode=getattr(pycolmap.CameraMode, "AUTO"), 
+            extraction_options={
+                "max_image_size": Config.stage1.coarse_max_img_size,
+                "use_gpu": True,
+                "sift": {"max_num_features": Config.stage1.coarse_num_features}
+            },
+            device="cuda"
+        )
 
+        # 2. Match (Sequential/Spatial is usually enough for a sequence)
+        logger.info("Starting Coarse Matching...")
+        with pycolmap.Database.open(paths["coarse_db"]) as db:
+            num_images = db.num_images()
+
+        logger.info(f"Number of images in coarse database: {num_images} from {len(images_list)} total images")
         # Assign matching options
         # For using pycolmap matching functions
         matching_options = {
@@ -629,7 +650,10 @@ def main(config_name="config", overrides=None):
     )
 
     # 4. Match Features (LightGlue)
-    matcher_conf = match_features.confs["superpoint+lightglue"]
+    # extractor may be like "superpoint_max" or "superpoint_low"; strip suffix after '_'
+    extractor_name = Config.stage2.extractor.split('_', 1)[0]
+    matcher_name = Config.stage2.matcher
+    matcher_conf = match_features.confs[f"{extractor_name}+{matcher_name}"]
     match_path = match_features.main(
         matcher_conf, 
         paths["pairs"], 
@@ -679,6 +703,19 @@ def main(config_name="config", overrides=None):
             image_list=images_list,
             options=pycolmap.ImageReaderOptions({"mask_path": paths["masks"], "camera_model": "RADIAL"})
         )
+
+        # check if the number of images in the fine database matches the number of resized images
+        with pycolmap.Database.open(paths["fine_db"]) as db:
+            num_images_in_db = db.num_images()
+            if num_images_in_db != len(images_list):
+                logger.warning(f"Number of images in fine database ({num_images_in_db}) does not match number of resized images ({len(images_list)}).")
+                reconstruction.import_images(
+                    paths["resized_images"], 
+                    paths["fine_db"], 
+                    getattr(pycolmap.CameraMode, "AUTO"),  # fallback to AUTO if mismatch
+                    image_list=images_list,
+                    options=pycolmap.ImageReaderOptions({"mask_path": paths["masks"], "camera_model": "RADIAL"})
+                )
         
         # Import Features/Matches
         image_ids = reconstruction.get_image_ids(paths["fine_db"])

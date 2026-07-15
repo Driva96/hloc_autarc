@@ -1,5 +1,5 @@
 extractor: "disk"
-matcher: "superglue"
+matcher: "lightglue"
 
 pairs:
   mode: "pose"

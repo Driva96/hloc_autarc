@@ -1,4 +1,4 @@
-silo_radius_ratio: 0.90
+silo_radius_ratio: 0.95
 safety_margin: 0.05 #0.025
 height_center_bias: -0.8
 buffer_distance: 3.0
