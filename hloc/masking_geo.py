@@ -515,7 +515,8 @@ def create_ray_box_mask_vec(img, camera, bbox_min, bbox_max):
     tmin = np.max(np.minimum(t1, t2), axis=1)
     tmax = np.min(np.maximum(t1, t2), axis=1)
 
-    hits = (tmax >= np.maximum(tmin, 0)) & (tmax >= 0)
+    # tmax >= max(tmin, 0) already implies tmax >= 0, so the second check is redundant
+    hits = tmax >= np.maximum(tmin, 0)
 
     mask = np.zeros(H * W, dtype=np.uint8)
     mask[valid] = hits.astype(np.uint8) * 255
