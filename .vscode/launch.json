@@ -16,7 +16,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/run_improved_pipeline.py",
-            "args": ["--overrides", "dataset=shortcut", "reset=aggressive"],
+            "args": ["--overrides", "dataset=worse_result_03", "reset=aggressive"],
             "console": "integratedTerminal"
         }
     ]

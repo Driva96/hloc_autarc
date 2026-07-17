@@ -16,6 +16,15 @@ import os
 from typing import Union, Literal
 from pathlib import Path
 
+BOX_FACES = [
+    [0,1,2,3],   # bottom
+    [4,5,6,7],   # top
+    [0,1,5,4],
+    [1,2,6,5],
+    [2,3,7,6],
+    [3,0,4,7],
+]
+
 def is_camera_inside_box(cam_center, corners, method, rotation_matrix=None, mean=None):
     """
     Simple check if camera is inside the 3D bounding box.
@@ -314,11 +323,19 @@ def create_mvs_masks(
             corners_cam = (R @ corners_world.T).T + tvec  # (8,3)
 
             # Project to 2D using camera model (pycolmap)
-            corners_cam_2d = get_safe_2d_projection(img, camera, corners_world)  
+            """ corners_cam_2d = get_safe_2d_projection(img, camera, corners_world)  
             if len(corners_cam_2d) >= 3:
                 points_int = corners_cam_2d.astype(np.int32)
                 hull = cv2.convexHull(points_int)
-                cv2.fillPoly(mask, [hull], 255)
+                cv2.fillPoly(mask, [hull], 255) """
+            
+            # Ray intersection approach
+            mask = create_ray_box_mask_vec(
+                img,
+                camera,
+                bbox_min,
+                bbox_max
+            )
 
             # old approach
             """ corners_cam_2d = []
@@ -361,6 +378,149 @@ def create_mvs_masks(
 
     print("Mask generation complete.")
     return corners_world
+
+def ray_box_intersection(ray_origin, ray_dir, bbox_min, bbox_max):
+    """
+    Standard slab ray/AABB intersection.
+
+    Parameters
+    ----------
+    ray_origin : (3,)
+    ray_dir    : (3,) normalized
+    bbox_min   : (3,)
+    bbox_max   : (3,)
+
+    Returns
+    -------
+    True iff ray intersects box.
+    """
+
+    inv_dir = np.empty(3)
+
+    eps = 1e-12
+    inv_dir[:] = np.where(np.abs(ray_dir) > eps,
+                          1.0 / ray_dir,
+                          np.inf)
+
+    t1 = (bbox_min - ray_origin) * inv_dir
+    t2 = (bbox_max - ray_origin) * inv_dir
+
+    tmin = np.maximum.reduce(np.minimum(t1, t2))
+    tmax = np.minimum.reduce(np.maximum(t1, t2))
+
+    if tmax < 0:
+        return False
+
+    return tmax >= max(tmin, 0.0)
+
+def create_ray_box_mask(img,
+                        camera,
+                        bbox_min,
+                        bbox_max):
+
+    H = camera.height
+    W = camera.width
+
+    mask = np.zeros((H, W), np.uint8)
+
+    world_to_cam = img.cam_from_world()
+    R = world_to_cam.rotation.matrix()
+
+    # camera -> world
+    Rcw = R.T
+
+    cam_center = img.projection_center()
+
+    for y in range(H):
+
+        for x in range(W):
+
+            # pixel center
+            uv = np.array([x + 0.5, y + 0.5])
+
+            xy = camera.cam_from_img(uv)
+
+            if xy is None:
+                continue
+
+            ray_cam = np.array([
+                xy[0],
+                xy[1],
+                1.0
+            ])
+
+            ray_cam /= np.linalg.norm(ray_cam)
+
+            ray_world = Rcw @ ray_cam
+
+            if ray_box_intersection(
+                    cam_center,
+                    ray_world,
+                    bbox_min,
+                    bbox_max):
+
+                mask[y, x] = 255
+
+    return mask
+
+def create_ray_box_mask_vec(img, camera, bbox_min, bbox_max):
+
+    H = camera.height
+    W = camera.width
+
+    # pixel centers
+    xs, ys = np.meshgrid(
+        np.arange(W) + 0.5,
+        np.arange(H) + 0.5
+    )
+
+    uv = np.stack([xs.ravel(), ys.ravel()], axis=1)
+
+    # camera coordinates for all pixels
+    xy = camera.cam_from_img(uv)
+
+    valid = xy is not None
+
+    if not np.all(valid):
+        # depends on camera implementation
+        xy = xy[valid]
+
+    # rays in camera coordinates
+    rays_cam = np.column_stack([
+        xy[:, 0],
+        xy[:, 1],
+        np.ones(len(xy))
+    ])
+
+    rays_cam /= np.linalg.norm(rays_cam, axis=1, keepdims=True)
+
+    # camera -> world
+    R = img.cam_from_world().rotation.matrix()
+    Rcw = R.T
+
+    rays_world = rays_cam @ Rcw.T
+
+    cam_center = img.projection_center()
+
+    # vectorized slab intersection
+    inv_dir = np.where(
+        np.abs(rays_world) > 1e-12,
+        1.0 / rays_world,
+        np.inf
+    )
+
+    t1 = (bbox_min - cam_center) * inv_dir
+    t2 = (bbox_max - cam_center) * inv_dir
+
+    tmin = np.max(np.minimum(t1, t2), axis=1)
+    tmax = np.min(np.maximum(t1, t2), axis=1)
+
+    hits = (tmax >= np.maximum(tmin, 0)) & (tmax >= 0)
+
+    mask = np.zeros(H * W, dtype=np.uint8)
+    mask[valid] = hits.astype(np.uint8) * 255
+
+    return mask.reshape(H, W)
 
 # Usage
 # create_mvs_masks("path/to/sparse/model", "path/to/images/masks", method="world")
