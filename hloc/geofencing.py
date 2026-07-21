@@ -416,6 +416,22 @@ def compute_adaptive_geofence(reconstruction,
         final_max_z = real_max_z[2] + (height * roof_buffer)
         
         return z_min, final_max_z, real_max_z
+    
+    # --- Sub-function 3: Apply Reconstruction Limits ---
+    def _apply_reconstruction_limit(min_box, max_box, points3D):
+        """Clips the bounding box to the actual extent of the sparse points."""
+        if not points3D:
+            return min_box, max_box
+            
+        all_xyz = np.array([p.xyz for p in points3D.values()])
+        recon_min = np.min(all_xyz, axis=0)
+        recon_max = np.max(all_xyz, axis=0)
+        
+        # Element-wise clip: ensures box doesn't go outside point cloud boundaries
+        limited_min = np.maximum(min_box, recon_min)
+        limited_max = np.minimum(max_box, recon_max)
+        
+        return limited_min, limited_max
 
     # --- Main Execution Flow ---
     
@@ -450,8 +466,16 @@ def compute_adaptive_geofence(reconstruction,
 
     # 5. Construct BBox
     # XY limits are the square bounding box of the circular silo
-    min_box = np.array([center_xy[0] - silo_radius - silo_radius * safety_margin, center_xy[1] - silo_radius - silo_radius * safety_margin, z_min])
-    max_box = np.array([center_xy[0] + silo_radius + silo_radius * safety_margin, center_xy[1] + silo_radius + silo_radius * safety_margin, z_max])
+    min_box = np.array([center_xy[0] - silo_radius - silo_radius * safety_margin, 
+                        center_xy[1] - silo_radius - silo_radius * safety_margin, 
+                        z_min])
+    max_box = np.array([center_xy[0] + silo_radius + silo_radius * safety_margin, 
+                        center_xy[1] + silo_radius + silo_radius * safety_margin, 
+                        z_max])
+
+    # 6. Apply Reconstruction Limits
+    min_box, max_box = _apply_reconstruction_limit(min_box, max_box, reconstruction.points3D)
+
     logger.info(f"[Geofence] Bounding Box Min: {min_box}, Max: {max_box}")
     
     return min_box, max_box

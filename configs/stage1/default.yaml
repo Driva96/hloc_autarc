@@ -4,7 +4,7 @@ coarse_num_features: 2048
 gps_priors:
   std_xy: 2.0
   std_z: 5.0
-  radius_threshold: 200.0  # meters
+  radius_threshold: 200.0  # meters, images outside this radius will be ignored for matching
 
 matching:
   strategy: "spatial"

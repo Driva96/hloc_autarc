@@ -183,6 +183,8 @@ def main(config_name="config", overrides=None):
             overrides=overrides
         )
     
+    GlobalHydra.instance().clear() # clear after use to avoid conflicts in future runs
+    
     # Print configuration for verification
     logger.info("="*80)
     logger.info("Loaded Configuration:")
@@ -345,20 +347,24 @@ def main(config_name="config", overrides=None):
         missing = len(images_list) - num_images
         
         if missing > 0:
-            logger.warning(f"⚠️  {missing} images were not processed during feature extraction. Will try to process them again using AUTO camera mode.")
-            pycolmap.extract_features(
-            paths["coarse_db"], 
-            image_path=raw_images_path, 
-            image_names=images_list,
-            camera_model="SIMPLE_RADIAL", 
-            camera_mode=getattr(pycolmap.CameraMode, "AUTO"), 
-            extraction_options={
-                "max_image_size": Config.stage1.coarse_max_img_size,
-                "use_gpu": True,
-                "sift": {"max_num_features": Config.stage1.coarse_num_features}
-            },
-            device="cuda"
-        )
+            if Config.stage1.camera.mode != "AUTO":
+                logger.warning(f"⚠️  {missing} images were not processed during feature extraction. Will try to process them again using AUTO camera mode.")
+                pycolmap.extract_features(
+                    paths["coarse_db"], 
+                    image_path=raw_images_path, 
+                    image_names=images_list,
+                    camera_model="SIMPLE_RADIAL", 
+                    camera_mode=getattr(pycolmap.CameraMode, "AUTO"), 
+                    extraction_options={
+                        "max_image_size": Config.stage1.coarse_max_img_size,
+                        "use_gpu": True,
+                        "sift": {"max_num_features": Config.stage1.coarse_num_features}
+                    },
+                    device="cuda"
+                )
+            else:
+                logger.warning(f"⚠️  {missing} images were not processed during feature extraction. They will not be considered for matching or reconstruction.")
+
 
         # 2. Match (Sequential/Spatial is usually enough for a sequence)
         logger.info("Starting Coarse Matching...")
@@ -571,7 +577,7 @@ def main(config_name="config", overrides=None):
     # 1. Resize Images and Masks for Processing
     from hloc.extract_features import resize_image
     
-    def process_resize(src_dir, dst_dir, max_size, interpolation="cv2_area", ext_filter=[".jpg", ".png"]):
+    def process_resize(src_dir, dst_dir, max_size, interpolation="cv2_area", ext_filter=[".jpg", ".jpeg", ".png"]):
         dst_dir.mkdir(parents=True, exist_ok=True)
         files = [f for f in src_dir.iterdir() if f.suffix.lower() in ext_filter]
 
@@ -708,14 +714,18 @@ def main(config_name="config", overrides=None):
         with pycolmap.Database.open(paths["fine_db"]) as db:
             num_images_in_db = db.num_images()
             if num_images_in_db != len(images_list):
-                logger.warning(f"Number of images in fine database ({num_images_in_db}) does not match number of resized images ({len(images_list)}).")
-                reconstruction.import_images(
-                    paths["resized_images"], 
-                    paths["fine_db"], 
-                    getattr(pycolmap.CameraMode, "AUTO"),  # fallback to AUTO if mismatch
-                    image_list=images_list,
-                    options=pycolmap.ImageReaderOptions({"mask_path": paths["masks"], "camera_model": "RADIAL"})
-                )
+                if Config.stage1.camera.mode != "AUTO":
+                    logger.warning(f"Number of images in fine database ({num_images_in_db}) does not match number of resized images ({len(images_list)}).")
+                    reconstruction.import_images(
+                        paths["resized_images"], 
+                        paths["fine_db"], 
+                        getattr(pycolmap.CameraMode, "AUTO"),  # fallback to AUTO if mismatch
+                        image_list=images_list,
+                        options=pycolmap.ImageReaderOptions({"mask_path": paths["masks"], "camera_model": "RADIAL"})
+                    )
+                else:
+                    logger.warning(f"Number of images in fine database ({num_images_in_db}) does not match number of resized images ({len(images_list)}). Missing images may not be processed correctly.")
+                    pass
         
         # Import Features/Matches
         image_ids = reconstruction.get_image_ids(paths["fine_db"])
@@ -812,7 +822,10 @@ def main(config_name="config", overrides=None):
         # OpenMVS expects undistorted pinhole images.
         undistorted_path = paths["mvs_root"] / "images"
         
-        if not undistorted_path.exists() or not list(undistorted_path.glob("*.[jJ][pP][gG]")):
+        if not undistorted_path.exists() or not (
+            list(undistorted_path.glob("*.[jJ][pP][gG]"))
+            or list(undistorted_path.glob("*.[jJ][pP][eE][gG]"))
+        ):
             logger.info("Undistorting images for MVS...")
             pycolmap.undistort_images(
                 paths["mvs_root"], 
@@ -849,7 +862,7 @@ def main(config_name="config", overrides=None):
         model.write(scaled_model_path)
 
         # Undistort Original High-Res Images
-        if not (scaled_model_path / "images").exists() or not list((scaled_model_path / "images").glob("*.[jJ][pP][gG]")):
+        if not (scaled_model_path / "images").exists() or not list((scaled_model_path / "images").glob("*.[jJ][pP][gG]")) and not list((scaled_model_path / "images").glob("*.[jJ][pP][eE][gG]")):
             logger.info("Undistorting high-res images...")
             pycolmap.undistort_images(
                 scaled_model_path, 
@@ -1278,10 +1291,48 @@ Examples:
     args = parser.parse_args()
     
     try:
-        output_root = main(config_name=args.config, overrides=args.overrides)
-        logger.info(f"\n✅ Pipeline completed successfully!")
-        logger.info(f"✅ Output directory: {output_root}")
+        # Detect dataset sweep
+        dataset_override = None
+        remaining_overrides = []
+
+        for override in args.overrides:
+            if override.startswith("dataset="):
+                dataset_override = override.split("=", 1)[1]
+            else:
+                remaining_overrides.append(override)
+
+        if dataset_override and "," in dataset_override:
+            datasets = dataset_override.split(",")
+
+            logger.info(f"Running sweep over {len(datasets)} datasets: {datasets}")
+
+            for dataset in datasets:
+                logger.info("=" * 80)
+                logger.info(f"STARTING DATASET: {dataset}")
+                logger.info("=" * 80)
+
+                overrides = remaining_overrides + [f"dataset={dataset}"]
+
+                output_root = main(
+                    config_name=args.config,
+                    overrides=overrides
+                )
+
+                logger.info(f"✅ Finished dataset {dataset}")
+                logger.info(f"✅ Output directory: {output_root}")
+
+        else:
+            # Normal single run
+            output_root = main(
+                config_name=args.config,
+                overrides=args.overrides
+            )
+
+            logger.info(f"\n✅ Pipeline completed successfully!")
+            logger.info(f"✅ Output directory: {output_root}")
+
         sys.exit(0)
+
     except Exception as e:
         logger.error(f"\n❌ Pipeline failed: {e}", exc_info=True)
         sys.exit(1)

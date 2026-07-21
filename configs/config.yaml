@@ -2,7 +2,7 @@ defaults:
   - dataset: friedrichs_house
   - stage1: default
   - stage2: superpoint_lightglue #disk_lightglue
-  - geofencing: loose
+  - geofencing: default
   - mvs: default
   - reset: conservative
   - _self_
