@@ -1,1 +1,1 @@
---cylinder_center "2.8495,11.5791,0.0409" --cylinder_axis "-0.0035,0.0077,-1.0000" --cylinder_radius 23.8736
+--cylinder_center "-4.8304,-5.9712,-0.5387" --cylinder_axis "-0.0919,0.0866,-0.9920" --cylinder_radius 16.0876

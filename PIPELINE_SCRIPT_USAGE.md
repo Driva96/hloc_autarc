@@ -57,7 +57,7 @@ python run_improved_pipeline.py --overrides mvs=high_quality geofencing=tight
 
 ### Stage 2 (Fine)
 - `superpoint_lightglue` (default)
-- `disk_superglue`
+- `disk_lightglue`
 - `exhaustive`
 
 ### Geofencing

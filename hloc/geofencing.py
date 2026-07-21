@@ -137,6 +137,10 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
         # Calculate the geometric center of the HULL (not the average of points)
         # This provides a tighter fit for irregular flight paths
         hull_center_pt = base_shape.centroid
+        if np.linalg.norm(circle_center_2d - np.array([hull_center_pt.x, hull_center_pt.y])) > 3.:
+            recon.write(output_model_path)
+            return {"center": world_geom_center, "normal": normal_axis, "radius": simple_cylinder_radius}
+    
         circle_center_2d = np.array([hull_center_pt.x, hull_center_pt.y])
         
         # Get coordinates of the hull vertices to find the furthest point
@@ -148,7 +152,7 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
 
         # Calculate radius: Max distance from Hull Center to Hull Vertices + Buffer
         dists = np.linalg.norm(hull_coords - circle_center_2d, axis=1)
-        # ### MODIFIED: Radius is derived from hull extent
+        # Radius is derived from hull extent
         simple_cylinder_radius = np.max(dists) + buffer_dist
 
         # draw circle 
@@ -183,6 +187,34 @@ def pca_cylinder_geofence(recon: pycolmap.Reconstruction, output_model_path, buf
         simple_cylinder_radius = np.max(dists_from_geom_center) + buffer_dist
         logger.info(f"Computed Hull Area: {geofence_poly.area:.2f}")
     
+    # Check for coverage 
+
+    # Project all reconstruction points
+    points_3d = np.array([p.xyz for p in recon.points3D.values()])
+
+    points_2d = project_to_pca_plane(points_3d)
+
+    inside = np.array([
+        prepared_poly.contains(Point(p))
+        for p in points_2d
+    ])
+
+    coverage = inside.mean()
+
+    logger.info(f"Circle contains {coverage*100:.1f}% of reconstructed points")
+
+    if coverage < 0.75:
+        logger.warning(
+            "Circle does not contain enough of the reconstruction. "
+            "Disabling geofence."
+        )
+
+        prepared_poly = None
+    # Check for coverage  done
+    if not prepared_poly:
+        logger.warning("Geofence is disabled. No points will be filtered.")
+        recon.write(output_model_path)
+        return {"center": world_geom_center, "normal": normal_axis, "radius": simple_cylinder_radius}
 
     c_str = f"{world_geom_center[0]:.4f},{world_geom_center[1]:.4f},{world_geom_center[2]:.4f}"
     n_str = f"{normal_axis[0]:.4f},{normal_axis[1]:.4f},{normal_axis[2]:.4f}"

@@ -58,19 +58,17 @@ def configure_logging(log_file: Path | None = None, level: int = logging.INFO) -
     root.setLevel(level)
     root.handlers.clear()
 
-    # Terminal
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setLevel(level)
-    sh.setFormatter(formatter)
-    root.addHandler(sh)
-
-    # File (optional)
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
         fh.setLevel(level)
         fh.setFormatter(formatter)
         root.addHandler(fh)
+    else:
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setLevel(level)
+        sh.setFormatter(formatter)
+        root.addHandler(sh)
 
 logger = logging.getLogger("ImprovedPipeline")
 configure_logging()  # default: terminal only
@@ -101,7 +99,7 @@ def run_cmd(command, cwd=None, env=None):
     )
 
     for line in process.stdout:
-        print(line, end='')
+        logger.info(line.rstrip())
 
     process.wait()
     if process.returncode != 0:
@@ -901,6 +899,7 @@ def main(config_name="config", overrides=None):
                     "--sub-resolution-levels", str(Config.mvs.densify.sub_resolution_levels),
                     "--postprocess-dmaps", str(Config.mvs.densify.postprocess_dmaps),
                     "--fusion-mode", str(Config.mvs.densify.fusion_mode),
+                    "--crop-to-roi", "0", # Use custom logic
                     "--mask-path", str(paths["masks"])
                 ], cwd=paths["mvs_root"], env=env)
                 
@@ -1025,26 +1024,28 @@ def main(config_name="config", overrides=None):
             c_axis = cropped_model_geofence_specs["normal"]
             c_radius = cropped_model_geofence_specs["radius"]
 
-            # Normalize axis to be safe (crucial for the math to work)
-            c_axis = c_axis / np.linalg.norm(c_axis)
+            if not np.all(c_center == np.array([0., 0., 0.])) and c_radius > 0:
 
-            # Generate MeshLab condition string for cylindrical cropping
-            # We need to select vertices where the distance to the axis line is > radius.
-            vx = f"(x - {c_center[0]})"
-            vy = f"(y - {c_center[1]})"
-            vz = f"(z - {c_center[2]})"
+                # Normalize axis to be safe (crucial for the math to work)
+                c_axis = c_axis / np.linalg.norm(c_axis)
 
-            dot = f"({vx} * {c_axis[0]} + {vy} * {c_axis[1]} + {vz} * {c_axis[2]})"
+                # Generate MeshLab condition string for cylindrical cropping
+                # We need to select vertices where the distance to the axis line is > radius.
+                vx = f"(x - {c_center[0]})"
+                vy = f"(y - {c_center[1]})"
+                vz = f"(z - {c_center[2]})"
 
-            perp_x = f"({vx} - {dot} * {c_axis[0]})"
-            perp_y = f"({vy} - {dot} * {c_axis[1]})"
-            perp_z = f"({vz} - {dot} * {c_axis[2]})"
+                dot = f"({vx} * {c_axis[0]} + {vy} * {c_axis[1]} + {vz} * {c_axis[2]})"
 
-            cyl_condition = f"({perp_x}*{perp_x} + {perp_y}*{perp_y} + {perp_z}*{perp_z}) > {c_radius**2}"
+                perp_x = f"({vx} - {dot} * {c_axis[0]})"
+                perp_y = f"({vy} - {dot} * {c_axis[1]})"
+                perp_z = f"({vz} - {dot} * {c_axis[2]})"
 
-            logger.info("Cutting Mesh with Cylinder...")
-            ms.compute_selection_by_condition_per_vertex(condselect=cyl_condition)
-            ms.meshing_remove_selected_vertices()
+                cyl_condition = f"({perp_x}*{perp_x} + {perp_y}*{perp_y} + {perp_z}*{perp_z}) > {c_radius**2}"
+
+                logger.info("Cutting Mesh with Cylinder...")
+                ms.compute_selection_by_condition_per_vertex(condselect=cyl_condition)
+                ms.meshing_remove_selected_vertices()
 
             logger.info("Removing the 'Skirt' (Stretched Edges)...")
             ms.compute_selection_by_edge_length(threshold=1.5) 
@@ -1206,6 +1207,7 @@ def main(config_name="config", overrides=None):
                 "meshed_model_decimated.ply",
                 "textured_output",
                 "--outlier_removal=gauss_clamping",
+                "--no_intermediate_results", # uncheck if you want to keep intermediate results (for coloring in unseen faces)
                 "--keep_unseen_faces",
                 "--num_threads="+str(os.cpu_count() if os.cpu_count() is not None else 8),
             ]
@@ -1265,6 +1267,9 @@ Examples:
   
   # Run with different dataset
   python run_improved_pipeline.py --overrides dataset=cunit
+
+  # Run with multiple datasets (sweep)
+  python run_improved_pipeline.py --overrides geofencing=default dataset=curved,curved_04,curved_05,cut_too_close_01,FriedrichsHouse,other_blockers_01,shortcut,siedlung,worse_result_01,worse_result_02,worse_result_03 reset=aggressive
   
   # Run with aggressive reset and different stage2 config
   python run_improved_pipeline.py --overrides reset=aggressive stage2=disk_superglue
@@ -1302,10 +1307,10 @@ Examples:
                 remaining_overrides.append(override)
 
         if dataset_override and "," in dataset_override:
-            datasets = dataset_override.split(",")
+            datasets = [d.strip() for d in dataset_override.split(",") if d.strip()]
 
             logger.info(f"Running sweep over {len(datasets)} datasets: {datasets}")
-
+            
             for dataset in datasets:
                 logger.info("=" * 80)
                 logger.info(f"STARTING DATASET: {dataset}")
@@ -1320,7 +1325,6 @@ Examples:
 
                 logger.info(f"✅ Finished dataset {dataset}")
                 logger.info(f"✅ Output directory: {output_root}")
-
         else:
             # Normal single run
             output_root = main(

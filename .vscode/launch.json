@@ -16,7 +16,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/run_improved_pipeline.py",
-            "args": ["-m","--overrides", "dataset=curved_04,curved_05,cut_too_close_01,worse_result_01,worse_result_02,worse_result_03", "reset=aggressive"],
+            "args": ["--overrides", "dataset=cut_too_close_01,worse_result_02,worse_result_03", "reset=aggressive"],
             "console": "integratedTerminal"
         }
     ]

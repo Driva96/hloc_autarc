@@ -1,5 +1,13 @@
 # Additions
 
+## Open
+- Cuda version of creating mask using raytracing algo slab: Masks take quite a while to be generated allthough they might be easily generated using hardware acceleration (probably existing slab implementations available)
+- Add Cuda support back into Ceres: `Ceres was compiled without cuDSS` - might already be supported in runtime build, but needs to be addressed in `Dockerfile.colmap` upon further rebuilds
+- Integrate functionality to change Color on Unseen Faces: Either in `mvs-texturing`(C++ app) or `unseenface-py` [link](https://github.com/Driva96/unseenface_py.git)
+- Either cleverly or Manually Decide between `DISK` or `Superpoint` for second stage feature extraction and matching. The former may improve some scenes but takes longer (both implemented - see [Quick Start Guide - Stage 2](PIPELINE_SCRIPT_USAGE.md#stage-2-fine))
+- Either cleverly or Manually Decide Geofencing Preset `default` or `loose`: The latter cuts less from the scene but may leave unecessary stuff reconstructed increasing computation time
+- Switch to `@hydra` instead of `hydra.compose`
+
 ## Improved Pipeline Script
 
 A production-ready script version of `notebooks/improved_pipeline.ipynb` is now available!
@@ -11,6 +19,13 @@ python run_improved_pipeline.py
 
 # Run with custom dataset and settings
 python run_improved_pipeline.py --overrides dataset=cunit reset=aggressive
+
+# Run with multiple datasets (sweep - squential)
+# !!! First install tqdm - will be placed into requirements (careful will trigger rebuild)
+# As of now seems to be part of installed python version 
+# python -m pip install tqdm 
+
+python run_improved_pipeline.py --overrides geofencing=default dataset=curved,curved_04,curved_05,cut_too_close_01,FriedrichsHouse,other_blockers_01,shortcut,siedlung,worse_result_01,worse_result_02,worse_result_03 reset=aggressive
 ```
 
 **Features:**

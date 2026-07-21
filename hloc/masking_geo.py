@@ -320,7 +320,9 @@ def create_mvs_masks(
             mask[:] = 255
         else:
             # Transform corners to Camera Coordinate System
-            corners_cam = (R @ corners_world.T).T + tvec  # (8,3)
+
+            # Not needed done inside ray intersection approach
+            # corners_cam = (R @ corners_world.T).T + tvec  # (8,3) 
 
             # Project to 2D using camera model (pycolmap)
             """ corners_cam_2d = get_safe_2d_projection(img, camera, corners_world)  
@@ -463,6 +465,7 @@ def create_ray_box_mask(img,
 
     return mask
 
+# vectorized version of the above function, which is much faster for large images
 def create_ray_box_mask_vec(img, camera, bbox_min, bbox_max):
 
     H = camera.height

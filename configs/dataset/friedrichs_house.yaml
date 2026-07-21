@@ -1,3 +1,0 @@
-experiment: "FriedrichsHouse"
-root: "/data/"
-raw_images: "${dataset.root}/${dataset.experiment}/full"

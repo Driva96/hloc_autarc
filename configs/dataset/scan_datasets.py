@@ -18,8 +18,8 @@ def main(search_path=SEARCH_PATH, config_dir=CONFIG_DIR):
             and "output" not in directory.name
         ):
             config = {
-                "experiment": directory.name,
-                "root": "/data/",
+                "experiment": f"{directory.name}",
+                "root": '/data/',
                 "raw_images": "${dataset.root}/${dataset.experiment}/full",
             }
 
